@@ -564,12 +564,15 @@ async function autoSync(){
 
       if(!drawings.length){
         // Debug: log a sample of the HTML to see the actual structure
-        const sample=html.substring(0,2000);
-        console.log("LotteryCorner HTML sample ("+lcUrl+"):",sample);
-        // Try alternate: look for any pattern with digits near month names
-        // LotteryCorner may render via JavaScript — check if page has data
-        const hasMonthData=/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i.test(html);
-        console.log("Has month/date data in HTML:",hasMonthData,"HTML length:",html.length);
+        // Find where the first date appears and log surrounding HTML
+        const monthReg=/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i;
+        const monthMatch=monthReg.exec(html);
+        if(monthMatch){
+          const pos=monthMatch.index;
+          console.log("Date found at pos "+pos+", surrounding HTML:",html.substring(Math.max(0,pos-200),pos+300));
+        }
+        const hasMonthData=monthReg.test(html);
+        console.log("Has month/date data:",hasMonthData,"HTML length:",html.length);
         throw new Error("No drawings parsed from page — site may have changed format");
       }
 
