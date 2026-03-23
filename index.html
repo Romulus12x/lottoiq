@@ -498,14 +498,18 @@ async function apiCall(messages,maxT){
   const headers={"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
   let r;
   try{
-    r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:headers,body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxT||1000,messages})});
+    const reqBody={model:"claude-haiku-4-5-20251001",max_tokens:maxT||1000,messages};
+    console.log("Sending to Anthropic:",JSON.stringify({model:reqBody.model,msgCount:messages.length,key_prefix:key.slice(0,12)}));
+    r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:headers,body:JSON.stringify(reqBody)});
   }catch(fetchErr){
     throw new Error("Network error - if using a downloaded file on Android, Chrome blocks API calls from local files. Try: Chrome menu > Settings > Site settings > enable file access, or host the file on a web server. Error: "+fetchErr.message);
   }
   let d;
   try{d=await r.json();}catch(e){throw new Error("Bad API response (HTTP "+r.status+")");}
+  console.log("Anthropic response status:",r.status,"body:",JSON.stringify(d));
   if(d.error){
     if(d.error.type==="authentication_error"||r.status===401)throw new Error("Invalid API key. Go to Settings to update your key.");
+    if(r.status===400)throw new Error("400: "+d.error.message+" ("+d.error.type+")");
     throw new Error(d.error.message||JSON.stringify(d.error));
   }
   return d.content&&d.content[0]&&d.content[0].text||"";
@@ -674,7 +678,7 @@ async function getAI(){
   try{
     const sum={state:ST,game:GM,total:an.total,hot:an.hot,cold:an.cold,due:an.due.slice(0,3).map(d=>d.n),domHL:an.topHL[0],domEO:an.topEO[0],hotSums:an.topS.slice(0,3).map(s=>s[0]),inspLoaded:!!ins,preds:preds.map(p=>p.straight+"("+p.confidence+"% HL:"+p.hl+" Sum:"+p.sum+")")};
     AIT=await apiCall([{role:"user",content:"You are a lottery data analyst. In 4 sentences explain key patterns and why top predictions were chosen. Reference HL patterns, sums, pairs. Data: "+JSON.stringify(sum)}],350);
-  }catch(e){AIT="Error."}
+  }catch(e){AIT="Error: "+e.message;}
   AIL=false;render();
 }
 
