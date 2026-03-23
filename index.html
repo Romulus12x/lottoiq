@@ -526,59 +526,62 @@ async function autoSync(){
   const year=new Date().getFullYear();
   let totalAdded=0,errors=[];
 
-  // Filter slots by selected session
   const filteredSlots=SYNC_SESSION==="all"?slots:slots.filter(function(s){
-    if(SYNC_SESSION==="midday")return s.session==="midday";
-    if(SYNC_SESSION==="evening")return s.session==="evening";
-    if(SYNC_SESSION==="morning")return s.session==="morning";
-    if(SYNC_SESSION==="night")return s.session==="night";
-    return true;
+    return s.session===SYNC_SESSION;
   });
 
   for(let si=0;si<filteredSlots.length;si++){
     const slot=filteredSlots[si];
-    const url="https://www.lotterycorner.com/"+slot.slug+"/"+year;
     const sessionName=slot.session;
+    const lcUrl="https://www.lotterycorner.com/"+slot.slug+"/"+year;
+    const proxyUrl="https://corsproxy.io/?"+encodeURIComponent(lcUrl);
     try{
-      // Use Claude to fetch and parse the page — ask it to retrieve the URL and return structured data
-      const syncKey=getApiKey();
-      if(!syncKey)throw new Error("API key required for auto-sync. Go to Settings to add your key.");
-      const resp=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":syncKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({
-          model:"claude-sonnet-4-6",
-          max_tokens:4000,
-          system:"You are a data extraction assistant. When given a URL, retrieve its content and extract lottery drawing results. Always respond with valid JSON only — no explanation, no markdown.",
-          messages:[{
-            role:"user",
-            content:"Go to this URL and extract all "+GM+" lottery results shown in the results table: "+url+"\n\nThe table has columns: Date, Result ("+dg+" digits), Jackpot.\n\nReturn ONLY this JSON format:\n{\"drawings\":[{\"numbers\":[\"1\",\"2\",\"3\",\"4\",\"5\"],\"date\":\"January 15, "+year+"\",\"session\":\""+sessionName+"\"}],\"count\":0}\n\nRules: Each numbers array has exactly "+dg+" single-digit strings 0-9. Extract every row shown. Do not skip any. If you cannot access the page return {\"drawings\":[],\"count\":0,\"error\":\"cannot access\"}"
-          }]
-        })
-      });
-      const data=await resp.json();
-      if(data.error)throw new Error(data.error.message);
-      const rawText=(data.content||[]).filter(function(c){return c.type==="text"}).map(function(c){return c.text}).join("");
-      const jsonMatch=rawText.replace(/```json|```/g,"").trim().match(/\{[\s\S]*\}/);
-      if(!jsonMatch)throw new Error("No data returned for "+sessionName);
-      const parsed=JSON.parse(jsonMatch[0]);
-      if(parsed.error)throw new Error(parsed.error);
-      const valid=(parsed.drawings||[]).filter(function(d){
-        return Array.isArray(d.numbers)&&d.numbers.length===dg&&d.numbers.every(function(n){return /^\d$/.test(n)});
-      });
-      if(valid.length>0){
-        const existing=DB.drawings[key]||[];
-        const existingKeys=new Set(existing.map(function(d){return d.numbers.join("")+"|"+(d.date||"")+(d.session||"")}));
-        const newOnes=valid.filter(function(d){return!existingKeys.has(d.numbers.join("")+"|"+(d.date||"")+sessionName)});
-        if(newOnes.length>0){
-          DB.drawings[key]=[...newOnes,...existing].slice(0,1000);
-          bustCache(key);
-          totalAdded+=newOnes.length;
+      SYNC_MSG="Fetching "+sessionName+" results...";render();
+      const resp=await fetch(proxyUrl);
+      if(!resp.ok)throw new Error("Fetch failed: HTTP "+resp.status);
+      const html=await resp.text();
+
+      // Parse the results table
+      // Rows look like: <td>March 22, 2026</td><td>6  7  6  Fire Ball</td>
+      const drawings=[];
+      // Match table rows with date and result
+      const rowReg=/<tr[^>]*>[\s\S]*?<td[^>]*>((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})<\/td>[\s\S]*?<td[^>]*>([\d\s]+?)(?:Fire Ball)?<\/td>/gi;
+      let match;
+      while((match=rowReg.exec(html))!==null){
+        const dateStr=match[1].trim();
+        const numStr=match[2].trim();
+        // Extract only digit characters, split by whitespace
+        const digits=numStr.replace(/[^\d\s]/g,"").trim().split(/\s+/).filter(function(d){return /^\d$/.test(d);});
+        // Take only the digits we need (dg), ignore fireball extra digit
+        if(digits.length>=dg){
+          drawings.push({
+            numbers:digits.slice(0,dg),
+            date:dateStr,
+            session:sessionName
+          });
         }
-        SYNC_MSG="Syncing... "+sessionName+" done ("+newOnes.length+" new). Processing remaining...";
-        render();
       }
-    }catch(e){errors.push(sessionName+": "+e.message)}
+
+      if(!drawings.length)throw new Error("No drawings parsed from page — site may have changed format");
+
+      // Deduplicate against existing
+      const existing=DB.drawings[key]||[];
+      const existingKeys=new Set(existing.map(function(d){
+        return d.numbers.join("")+"|"+(d.date||"")+(d.session||"");
+      }));
+      const newOnes=drawings.filter(function(d){
+        return!existingKeys.has(d.numbers.join("")+"|"+(d.date||"")+sessionName);
+      });
+
+      if(newOnes.length>0){
+        DB.drawings[key]=[...newOnes,...existing].slice(0,1000);
+        bustCache(key);
+        totalAdded+=newOnes.length;
+      }
+      SYNC_MSG="Syncing... "+sessionName+" done ("+newOnes.length+" new)";render();
+    }catch(e){
+      errors.push(sessionName+": "+e.message);
+    }
   }
 
   saveDB();
