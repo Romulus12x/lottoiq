@@ -498,7 +498,7 @@ async function apiCall(messages,maxT){
   const headers={"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
   let r;
   try{
-    r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:headers,body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:maxT||1000,messages})});
+    r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:headers,body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxT||1000,messages})});
   }catch(fetchErr){
     throw new Error("Network error - if using a downloaded file on Android, Chrome blocks API calls from local files. Try: Chrome menu > Settings > Site settings > enable file access, or host the file on a web server. Error: "+fetchErr.message);
   }
@@ -544,7 +544,7 @@ async function autoSync(){
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514",
+          model:"claude-sonnet-4-6",
           max_tokens:4000,
           system:"You are a data extraction assistant. When given a URL, retrieve its content and extract lottery drawing results. Always respond with valid JSON only — no explanation, no markdown.",
           messages:[{
