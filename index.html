@@ -545,14 +545,14 @@ async function autoSync(){
       // Rows look like: <td>March 22, 2026</td><td>6  7  6  Fire Ball</td>
       const drawings=[];
       // Match table rows with date and result
-      const rowReg=/<tr[^>]*>[\s\S]*?<td[^>]*>((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})<\/td>[\s\S]*?<td[^>]*>([\d\s]+?)(?:Fire Ball)?<\/td>/gi;
+      // Robust parser: find all date cells then grab the following result cell
+      const dateReg=/<td[^>]*>\s*((?:January|February|March|April|May|June|July|August|September|October|November|December)[^<]+\d{4})\s*<\/td>\s*<td[^>]*>([^<]*)<\/td>/gi;
       let match;
-      while((match=rowReg.exec(html))!==null){
+      while((match=dateReg.exec(html))!==null){
         const dateStr=match[1].trim();
-        const numStr=match[2].trim();
-        // Extract only digit characters, split by whitespace
-        const digits=numStr.replace(/[^\d\s]/g,"").trim().split(/\s+/).filter(function(d){return /^\d$/.test(d);});
-        // Take only the digits we need (dg), ignore fireball extra digit
+        const numStr=match[2];
+        // Extract single digits only (ignore multi-digit jackpot numbers)
+        const digits=numStr.match(/\b\d\b/g)||[];
         if(digits.length>=dg){
           drawings.push({
             numbers:digits.slice(0,dg),
@@ -562,7 +562,16 @@ async function autoSync(){
         }
       }
 
-      if(!drawings.length)throw new Error("No drawings parsed from page — site may have changed format");
+      if(!drawings.length){
+        // Debug: log a sample of the HTML to see the actual structure
+        const sample=html.substring(0,2000);
+        console.log("LotteryCorner HTML sample ("+lcUrl+"):",sample);
+        // Try alternate: look for any pattern with digits near month names
+        // LotteryCorner may render via JavaScript — check if page has data
+        const hasMonthData=/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i.test(html);
+        console.log("Has month/date data in HTML:",hasMonthData,"HTML length:",html.length);
+        throw new Error("No drawings parsed from page — site may have changed format");
+      }
 
       // Deduplicate against existing
       const existing=DB.drawings[key]||[];
