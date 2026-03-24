@@ -545,37 +545,44 @@ async function autoSync(){
       // Rows look like: <td>March 22, 2026</td><td>6  7  6  Fire Ball</td>
       const drawings=[];
       // Match table rows with date and result
-      // Robust parser: find all date cells then grab the following result cell
-      const dateReg=/<td[^>]*>\s*((?:January|February|March|April|May|June|July|August|September|October|November|December)[^<]+\d{4})\s*<\/td>\s*<td[^>]*>([^<]*)<\/td>/gi;
-      let match;
-      while((match=dateReg.exec(html))!==null){
-        const dateStr=match[1].trim();
-        const numStr=match[2];
-        // Extract single digits only (ignore multi-digit jackpot numbers)
-        const digits=numStr.match(/\b\d\b/g)||[];
-        if(digits.length>=dg){
-          drawings.push({
-            numbers:digits.slice(0,dg),
-            date:dateStr,
-            session:sessionName
-          });
+      // Parse: find all <tr> rows containing a date, strip HTML, extract digits
+      const trReg = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+      const monthPat = "January|February|March|April|May|June|July|August|September|October|November|December";
+      const datePat = new RegExp("(" + monthPat + ")\\s+(\\d{1,2}),\\s+(\\d{4})", "i");
+      let trMatch;
+      while ((trMatch = trReg.exec(html)) !== null) {
+        const row = trMatch[1];
+        const dm = datePat.exec(row);
+        if (!dm) continue;
+        const dateStr = dm[1] + " " + dm[2] + ", " + dm[3];
+        // Strip tags, collect single digits 0-9
+        const stripped = row.replace(/<[^>]+>/g, " ");
+        const allDigits = [];
+        const digitReg = /(?<![\d])(\d)(?![\d])/g;
+        let dm2;
+        while ((dm2 = digitReg.exec(stripped)) !== null) {
+          allDigits.push(dm2[1]);
+        }
+        if (allDigits.length >= dg) {
+          drawings.push({ numbers: allDigits.slice(0, dg), date: dateStr, session: sessionName });
         }
       }
-
-      if(!drawings.length){
-        // Debug: log a sample of the HTML to see the actual structure
-        // Find where the first date appears and log surrounding HTML
-        const monthReg=/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i;
-        const monthMatch=monthReg.exec(html);
-        if(monthMatch){
-          const pos=monthMatch.index;
-          console.log("Date found at pos "+pos+", surrounding HTML:",html.substring(Math.max(0,pos-200),pos+300));
+      // Fallback: strip ALL html and scan plain text for date + digit sequences
+      if (!drawings.length) {
+        const plain = html.replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ").replace(/\s+/g," ");
+        const chunks = plain.split(/(?=(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})/);
+        for (const chunk of chunks) {
+          const dm3 = datePat.exec(chunk);
+          if (!dm3) continue;
+          const dateStr = dm3[1] + " " + dm3[2] + ", " + dm3[3];
+          const rest = chunk.slice(dm3.index + dm3[0].length, dm3.index + dm3[0].length + 60);
+          const digits = [];
+          const dg2 = /(?<![\d])(\d)(?![\d])/g;
+          let m4;
+          while ((m4 = dg2.exec(rest)) !== null) digits.push(m4[1]);
+          if (digits.length >= dg) drawings.push({ numbers: digits.slice(0,dg), date: dateStr, session: sessionName });
         }
-        const hasMonthData=monthReg.test(html);
-        console.log("Has month/date data:",hasMonthData,"HTML length:",html.length);
-        throw new Error("No drawings parsed from page — site may have changed format");
       }
-
       // Deduplicate against existing
       const existing=DB.drawings[key]||[];
       const existingKeys=new Set(existing.map(function(d){
