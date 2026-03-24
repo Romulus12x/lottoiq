@@ -80,8 +80,8 @@ function geo(n){return n.map(x=>isE(x)?"E":"O").join("")}
 // ── LotteryCorner URL map ─────────────────────────────────────────────────────
 const LC_MAP = {
   // Delaware
-  "DE|Pick 3": [{slug:"de/play-3-day",session:"midday"},{slug:"de/play-3",session:"evening"}],
-  "DE|Pick 4": [{slug:"de/play-4-day",session:"midday"},{slug:"de/play-4",session:"evening"}],
+  "DE|Pick 3": [{slug:"de/play-3-day",session:"midday"},{slug:"de/play-3-night",session:"evening"}],
+  "DE|Pick 4": [{slug:"de/play-4-day",session:"midday"},{slug:"de/play-4-night",session:"evening"}],
   "DE|Pick 5": [{slug:"de/play-5-day",session:"midday"},{slug:"de/play-5",session:"evening"}],
   // Florida
   "FL|Pick 3": [{slug:"fl/pick-3-midday",session:"midday"},{slug:"fl/pick-3-evening",session:"evening"}],
@@ -105,16 +105,16 @@ const LC_MAP = {
   "PA|Pick 4": [{slug:"pa/pick-4-midday",session:"midday"},{slug:"pa/pick-4-evening",session:"evening"}],
   "PA|Pick 5": [{slug:"pa/pick-5-midday",session:"midday"},{slug:"pa/pick-5-evening",session:"evening"}],
   // Virginia
-  "VA|Pick 3": [{slug:"va/pick-3-midday",session:"midday"},{slug:"va/pick-3-evening",session:"evening"}],
-  "VA|Pick 4": [{slug:"va/pick-4-midday",session:"midday"},{slug:"va/pick-4-evening",session:"evening"}],
-  "VA|Pick 5": [{slug:"va/pick-5-midday",session:"midday"},{slug:"va/pick-5-evening",session:"evening"}],
+  "VA|Pick 3": [{slug:"va/pick-3-day",session:"midday"},{slug:"va/pick-3-night",session:"evening"}],
+  "VA|Pick 4": [{slug:"va/pick-4-day",session:"midday"},{slug:"va/pick-4-night",session:"evening"}],
+  "VA|Pick 5": [{slug:"va/pick-5-day",session:"midday"},{slug:"va/pick-5-night",session:"evening"}],
   // Washington DC
   "DC|Pick 3": [{slug:"dc/dc-3-midday",session:"midday"},{slug:"dc/dc-3-evening",session:"evening"}],
   "DC|Pick 4": [{slug:"dc/dc-4-midday",session:"midday"},{slug:"dc/dc-4-evening",session:"evening"}],
   "DC|Pick 5": [{slug:"dc/dc-5-midday",session:"midday"},{slug:"dc/dc-5-evening",session:"evening"}],
   // Texas — 4 draws
   "TX|Pick 3": [{slug:"tx/pick-3-morning",session:"morning"},{slug:"tx/pick-3-day",session:"midday"},{slug:"tx/pick-3-evening",session:"evening"},{slug:"tx/pick-3-night",session:"night"}],
-  "TX|Pick 4": [{slug:"tx/pick-4-morning",session:"morning"},{slug:"tx/pick-4-day",session:"midday"},{slug:"tx/pick-4-evening",session:"evening"},{slug:"tx/pick-4-night",session:"night"}],
+  "TX|Pick 4": [{slug:"tx/daily-4-morning",session:"morning"},{slug:"tx/daily-4-day",session:"midday"},{slug:"tx/daily-4-evening",session:"evening"},{slug:"tx/daily-4-night",session:"night"}],
 };
 
 // Get available session names for current state+game
