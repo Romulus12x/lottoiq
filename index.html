@@ -92,9 +92,9 @@ const LC_MAP = {
   "GA|Pick 4": [{slug:"ga/cash-4-midday",session:"midday"},{slug:"ga/cash-4-evening",session:"evening"},{slug:"ga/cash-4-night",session:"night"}],
   "GA|Pick 5": [{slug:"ga/georgia-five-midday",session:"midday"},{slug:"ga/georgia-five-evening",session:"evening"}],
   // Louisiana
-  "LA|Pick 3": [{slug:"la/pick-3-midday",session:"midday"},{slug:"la/pick-3-evening",session:"evening"}],
-  "LA|Pick 4": [{slug:"la/pick-4-midday",session:"midday"},{slug:"la/pick-4-evening",session:"evening"}],
-  "LA|Pick 5": [{slug:"la/pick-5-midday",session:"midday"},{slug:"la/pick-5-evening",session:"evening"}],
+  "LA|Pick 3": [{slug:"la/pick-3",session:"evening"}],
+  "LA|Pick 4": [{slug:"la/pick-4",session:"evening"}],
+  "LA|Pick 5": [{slug:"la/pick-5",session:"evening"}],
   // Maryland
   // Ohio
   "OH|Pick 3": [{slug:"oh/pick-3-midday",session:"midday"},{slug:"oh/pick-3-evening",session:"evening"}],
@@ -157,15 +157,24 @@ function analyze(drawings,game){
   const cold=fs.slice(-5).map(e=>e[0]);
   // Top digit per position
   const posTop=pos.map(function(p){return Object.entries(p).sort((a,b)=>b[1]-a[1])});
-  return{fr,pos,posTop,due,hot,cold,topP:Object.entries(pf).sort((a,b)=>b[1]-a[1]).slice(0,10),topC:Object.entries(cf).sort((a,b)=>b[1]-a[1]).slice(0,10),topFP:Object.entries(fp).sort((a,b)=>b[1]-a[1]).slice(0,10),topBP:Object.entries(bp).sort((a,b)=>b[1]-a[1]).slice(0,10),topMP:Object.entries(mp).sort((a,b)=>b[1]-a[1]).slice(0,10),hl,eo,sc,rc,sl,tc,topHL:Object.entries(hl).sort((a,b)=>b[1]-a[1]),topEO:Object.entries(eo).sort((a,b)=>b[1]-a[1]),topS:Object.entries(sc).sort((a,b)=>b[1]-a[1]),topR:Object.entries(rc).sort((a,b)=>b[1]-a[1]),topSL:Object.entries(sl).sort((a,b)=>b[1]-a[1]),total:drawings.length};
+  const lastDraw=drawings.length>0?drawings[0].numbers:[];
+  return{fr,pos,posTop,due,hot,cold,topP:Object.entries(pf).sort((a,b)=>b[1]-a[1]).slice(0,10),topC:Object.entries(cf).sort((a,b)=>b[1]-a[1]).slice(0,10),topFP:Object.entries(fp).sort((a,b)=>b[1]-a[1]).slice(0,10),topBP:Object.entries(bp).sort((a,b)=>b[1]-a[1]).slice(0,10),topMP:Object.entries(mp).sort((a,b)=>b[1]-a[1]).slice(0,10),hl,eo,sc,rc,sl,tc,topHL:Object.entries(hl).sort((a,b)=>b[1]-a[1]),topEO:Object.entries(eo).sort((a,b)=>b[1]-a[1]),topS:Object.entries(sc).sort((a,b)=>b[1]-a[1]),topR:Object.entries(rc).sort((a,b)=>b[1]-a[1]),topSL:Object.entries(sl).sort((a,b)=>b[1]-a[1]),total:drawings.length,lastDraw};
 }
 
 function predict(an,game,ins){
   const dg=DIGITS[game];
   const{fr,due,hot,total,hl,eo,sc,rc,tc}=an;
   if(total<5)return[];
+  // WOL Phase 2: carryover seed — boost digits from last draw and their mirrors
+  const lastDrawNums=an.lastDraw?an.lastDraw.map(String):[];
+  const mirrorOfLast=lastDrawNums.map(d=>String((parseInt(d)+5)%10));
   const scores={};
-  for(let i=0;i<=9;i++){const n=String(i),f=fr[n]||0,hb=hot.includes(n)?15:0,di=due.findIndex(d=>d.n===n),db=di<3?(3-di)*10:0;scores[n]=(f/total)*60+hb+db}
+  for(let i=0;i<=9;i++){
+    const n=String(i),f=fr[n]||0,hb=hot.includes(n)?15:0,di=due.findIndex(d=>d.n===n),db=di<3?(3-di)*10:0;
+    const carryBonus=lastDrawNums.includes(n)?20:0;
+    const mirrorBonus=mirrorOfLast.includes(n)&&!lastDrawNums.includes(n)?10:0;
+    scores[n]=(f/total)*60+hb+db+carryBonus+mirrorBonus;
+  }
   if(ins){
     if(ins.keyNumbers)Object.entries(ins.keyNumbers).forEach(e=>{if(scores[e[0]]!==undefined)scores[e[0]]+=(e[1]/100)*20});
     if(ins.topPairs)ins.topPairs.slice(0,10).forEach(e=>e[0].split("-").forEach(n=>{if(scores[n]!==undefined)scores[n]+=5}));
@@ -263,14 +272,66 @@ function getTodayKey(){const d=new Date();return d.getFullYear()+"-"+(d.getMonth
 function getDailyPreds(dateKey){return DB.dailyPreds[dateKey]||{}}
 let DAILY_GEN_LOADING=false,DAILY_GEN_MSG="";
 
-function generateDailyPreds(){
+async function generateDailyPreds(){
   const dateKey=getTodayKey();
   if(DB.dailyPreds[dateKey]&&Object.keys(DB.dailyPreds[dateKey]).length>0){
     if(!confirm("Predictions for today ("+dateKey+") already exist. Regenerate?"))return;
   }
-  DAILY_GEN_LOADING=true;DAILY_GEN_MSG="";render();
-  const snapshot={};
+  DAILY_GEN_LOADING=true;
+  DAILY_GEN_MSG="Step 1/3: Syncing latest draws...";render();
+
+  // Step 1: Auto-sync all states silently
   const allGames=["Pick 3","Pick 4","Pick 5"];
+  const origST=ST,origGM=GM,origSession=SYNC_SESSION;
+  SYNC_SESSION="all";
+  let syncErrors=0,syncAdded=0;
+  for(const st of STATES){
+    for(const gm of allGames){
+      const lcKey=st+"|"+gm;
+      const slots=LC_MAP[lcKey];
+      if(!slots||!slots.length)continue;
+      for(const slot of slots){
+        const lcUrl="https://www.lotterycorner.com/"+slot.slug+"/"+new Date().getFullYear();
+        const proxyUrl="https://corsproxy.io/?"+encodeURIComponent(lcUrl);
+        try{
+          const resp=await fetch(proxyUrl);
+          if(!resp.ok)continue;
+          const html=await resp.text();
+          const trReg=/<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+          const monthPat="January|February|March|April|May|June|July|August|September|October|November|December";
+          const datePat=new RegExp("("+monthPat+")\s+(\d{1,2}),\s+(\d{4})","i");
+          const dg=DIGITS[gm];
+          const drawings=[];
+          let trMatch;
+          while((trMatch=trReg.exec(html))!==null){
+            const row=trMatch[1];
+            const dm=datePat.exec(row);
+            if(!dm)continue;
+            const dateStr=dm[1]+" "+dm[2]+", "+dm[3];
+            const stripped=row.replace(/<[^>]+>/g," ");
+            const digits=stripped.match(/(?<!\d)(\d)(?!\d)/g)||[];
+            if(digits.length>=dg)drawings.push({numbers:digits.slice(0,dg),date:dateStr,session:slot.session});
+          }
+          if(drawings.length){
+            const existing=DB.drawings[lcKey]||[];
+            const existingKeys=new Set(existing.map(function(d){return d.numbers.join("")+"|"+(d.date||"")+(d.session||"");}));
+            const newOnes=drawings.filter(function(d){return!existingKeys.has(d.numbers.join("")+"|"+(d.date||"")+slot.session);});
+            if(newOnes.length){DB.drawings[lcKey]=[...newOnes,...existing].slice(0,1000);bustCache(lcKey);syncAdded+=newOnes.length;}
+          }
+        }catch(e){syncErrors++;}
+      }
+    }
+  }
+  if(syncAdded>0)saveDB();
+  SYNC_SESSION=origSession;
+
+  // Step 2: Score any unscored past predictions
+  DAILY_GEN_MSG="Step 2/3: Checking yesterday\'s results...";render();
+  autoCheckResults();
+
+  // Step 3: Generate today's predictions
+  DAILY_GEN_MSG="Step 3/3: Generating predictions...";render();
+  const snapshot={};
   STATES.forEach(function(st){
     allGames.forEach(function(gm){
       const key=st+"|"+gm;
@@ -287,12 +348,11 @@ function generateDailyPreds(){
     });
   });
   DB.dailyPreds[dateKey]=snapshot;
-  // keep max 60 days
-  const keys=Object.keys(DB.dailyPreds).sort();
-  if(keys.length>60)keys.slice(0,keys.length-60).forEach(function(k){delete DB.dailyPreds[k];});
+  const keys2=Object.keys(DB.dailyPreds).sort();
+  if(keys2.length>60)keys2.slice(0,keys2.length-60).forEach(function(k){delete DB.dailyPreds[k];});
   saveDB();
   DAILY_GEN_LOADING=false;
-  DAILY_GEN_MSG="✓ Predictions locked in for "+Object.keys(snapshot).length+" games on "+dateKey;
+  DAILY_GEN_MSG="✓ Synced "+syncAdded+" new draws · Predictions locked for "+Object.keys(snapshot).length+" games · "+dateKey;
   render();
 }
 
@@ -300,6 +360,68 @@ function markDailyHit(dateKey,gameKey,predIdx,hitType){
   if(!DB.dailyPreds[dateKey]||!DB.dailyPreds[dateKey][gameKey])return;
   DB.dailyPreds[dateKey][gameKey][predIdx].hit=hitType;
   saveDB();render();
+}
+
+function autoCheckResults(){
+  // Run silently on app open — check all PENDING predictions against draw history
+  let totalChecked=0,totalHits=0;
+  const today=getTodayKey();
+
+  Object.entries(DB.dailyPreds).forEach(function(dateEntry){
+    const dateKey=dateEntry[0],snap=dateEntry[1];
+    // Only check past days (not today — draws may not be in yet)
+    if(dateKey>=today)return;
+
+    Object.entries(snap).forEach(function(gameEntry){
+      const gameKey=gameEntry[0],preds=gameEntry[1];
+      const drawings=DB.drawings[gameKey]||[];
+      if(!drawings.length)return;
+
+      // Find draws that match this date
+      // dateKey is YYYY-MM-DD, draw dates are stored as "Month DD, YYYY"
+      const dateParts=dateKey.split("-");
+      const monthNames=["","January","February","March","April","May","June","July","August","September","October","November","December"];
+      const targetDate=monthNames[parseInt(dateParts[1])]+" "+parseInt(dateParts[2])+", "+dateParts[0];
+
+      // Find draws from that date
+      const dateDraws=drawings.filter(function(d){
+        return d.date===targetDate;
+      });
+
+      // Also try matching by index — most recent draws at index 0
+      // If no date match, use draws within 2 days range as fallback
+      const drawsToCheck=dateDraws.length>0?dateDraws:[];
+
+      if(!drawsToCheck.length)return;
+
+      preds.forEach(function(pred,idx){
+        if(pred.hit!=="PENDING")return;
+
+        // Check each draw from that date
+        var hitType="MISS";
+        drawsToCheck.forEach(function(draw){
+          if(!draw.numbers||!draw.numbers.length)return;
+          const actual=draw.numbers.join("");
+          const actualBox=[...draw.numbers].sort().join("");
+          const predStraight=pred.straight;
+          const predBox=pred.box||[...pred.straight.split("")].sort().join("");
+
+          if(actual===predStraight){hitType="STRAIGHT";}
+          else if(actualBox===predBox&&hitType==="MISS"){hitType="BOX";}
+        });
+
+        DB.dailyPreds[dateKey][gameKey][idx].hit=hitType;
+        totalChecked++;
+        if(hitType!=="MISS")totalHits++;
+      });
+    });
+  });
+
+  if(totalChecked>0){
+    saveDB();
+    console.log("LottoIQ auto-check: "+totalChecked+" predictions scored, "+totalHits+" hits found");
+  }
+  return{checked:totalChecked,hits:totalHits};
 }
 
 function getDailyStats(days){
@@ -932,11 +1054,30 @@ function render(){
         var rc2=overallRate>20?"#43aa8b":overallRate>10?"#f9c74f":"#ef4444";
         h+='<div style="font-size:11px;color:#475569">30-day: <span style="font-weight:700;color:'+rc2+'">'+overallRate+'% hits</span> <span style="color:#334155">('+stats.total+' scored)</span></div>';
       }
+      h+='<button class="btn bh" style="font-size:11px;padding:6px 12px;margin-right:4px" onclick="autoCheckResults();render()" title="Score past predictions against draw history">✓ Check Results</button>';
       h+='<button class="btn bp" style="font-size:11px;padding:6px 12px" onclick="generateDailyPreds()" '+(DAILY_GEN_LOADING?"disabled":"")+">"+(DAILY_GEN_LOADING?"Generating...":hasToday?"🔄 Regenerate":"⚡ Generate Today")+"</button>";
       h+='</div></div>';
 
       if(DAILY_GEN_MSG){
         h+='<div style="font-size:12px;font-weight:700;color:#43aa8b;margin-bottom:10px">'+DAILY_GEN_MSG+'</div>';
+      }
+      // Show auto-check status
+      var pendingCount=0,scoredCount=0,hitCount=0;
+      Object.entries(DB.dailyPreds).forEach(function(de){
+        if(de[0]>=getTodayKey())return;
+        Object.values(de[1]).forEach(function(preds){
+          preds.forEach(function(p){
+            if(p.hit==="PENDING")pendingCount++;
+            else{scoredCount++;if(p.hit!=="MISS")hitCount++;}
+          });
+        });
+      });
+      if(scoredCount>0||pendingCount>0){
+        h+='<div style="font-size:11px;color:#334155;margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap">';
+        h+='<span>📊 Past predictions: <span style="color:#e2e8f0;font-weight:700">'+scoredCount+' scored</span></span>';
+        if(hitCount>0)h+='<span>🎯 <span style="color:#43aa8b;font-weight:700">'+hitCount+' hits</span> found</span>';
+        if(pendingCount>0)h+='<span>⏳ <span style="color:#f9c74f;font-weight:700">'+pendingCount+' pending</span> (no draw data yet)</span>';
+        h+='</div>';
       }
 
       if(hasToday){
@@ -1011,6 +1152,264 @@ function render(){
 
     if(!an){h+=`<div style="text-align:center;padding:60px;color:#334155"><div style="font-size:44px;margin-bottom:10px">🎱</div><div style="font-size:16px;font-weight:700;color:#475569">No data for ${ST} ${GM}</div><div style="font-size:13px;margin-top:6px">Go to the Data tab to import drawings</div></div>`}
     else{
+      // ── WOL Mirror Card ───────────────────────────────────────────────────────
+      (function(){
+        const lastDraw=dr[0];
+        if(!lastDraw)return;
+        const prevDigits=lastDraw.numbers;
+        const mirrorPairs=[[0,5],[1,6],[2,7],[3,8],[4,9]];
+        const MIRROR_LABELS={0:"0↔5",1:"1↔6",2:"2↔7",3:"3↔8",4:"4↔9"};
+
+        // For each digit in last draw, compute its mirror
+        const prevSet=new Set(prevDigits.map(Number));
+        const mirrorSet=new Set(prevDigits.map(d=>((parseInt(d)+5)%10)));
+
+        // Carryover check: which of last draw's digits appear in the draw before that
+        const prevDraw2=dr[1]?dr[1].numbers:[];
+        const prevSet2=new Set(prevDraw2.map(Number));
+        const carryover=[...prevSet].filter(d=>prevSet2.has(d));
+
+        // Score each digit 0-9 for the mirror card
+        // Hot = appears in last draw OR is mirror of last draw digit
+        // Rank: last draw digit = red, mirror of last draw = purple, carryover = highlighted
+        const digitStatus={};
+        for(let d=0;d<10;d++){
+          if(prevSet.has(d)) digitStatus[d]="prev";
+          else if(mirrorSet.has(d)) digitStatus[d]="mirror";
+          else digitStatus[d]="cold";
+        }
+
+        // Mirror pair activation — a pair is "active" if either side appeared in last draw
+        const activePairs=mirrorPairs.filter(([a,b])=>prevSet.has(a)||prevSet.has(b));
+
+        // Build the card
+        h+='<div class="card" style="background:#0a0515;border-color:#6d28d9;margin-bottom:16px">';
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+        h+='<div style="font-size:13px;font-weight:700;color:#a78bfa;letter-spacing:1px">🔮 WOL MIRROR — Last Draw Carryover</div>';
+        h+='<div style="font-size:10px;color:#4c1d95;background:#1e0a4a;padding:3px 8px;border-radius:4px;letter-spacing:1px">PHASE 1</div>';
+        h+='</div>';
+
+        // Last draw digits row
+        h+='<div style="margin-bottom:14px">';
+        h+='<div style="font-size:10px;color:#6d28d9;letter-spacing:1px;margin-bottom:6px;text-transform:uppercase">Last Draw</div>';
+        h+='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">';
+        prevDigits.forEach(d=>{
+          h+=`<div style="width:38px;height:38px;border-radius:50%;background:#3b0764;border:2px solid #a78bfa;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#e9d5ff">${d}</div>`;
+        });
+        h+=`<div style="font-size:11px;color:#475569;margin-left:6px">→ mirror →</div>`;
+        prevDigits.forEach(d=>{
+          const m=mirrorDigit(d);
+          h+=`<div style="width:38px;height:38px;border-radius:50%;background:#1e0a4a;border:2px dashed #7c3aed;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:#a78bfa">${m}</div>`;
+        });
+        h+='</div></div>';
+
+        // Active mirror pairs
+        h+='<div style="margin-bottom:14px">';
+        h+='<div style="font-size:10px;color:#6d28d9;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase">Active Mirror Pairs</div>';
+        h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+        mirrorPairs.forEach(([a,b],i)=>{
+          const active=prevSet.has(a)||prevSet.has(b);
+          const bothSides=prevSet.has(a)&&prevSet.has(b);
+          const bg=bothSides?"#3b0764":active?"#1e0a4a":"#0a0f1e";
+          const border=bothSides?"#ff4e00":active?"#7c3aed":"#1e293b";
+          const textColor=bothSides?"#fcd34d":active?"#c4b5fd":"#334155";
+          h+=`<div style="background:${bg};border:1px solid ${border};border-radius:6px;padding:6px 12px;font-size:13px;font-family:monospace;color:${textColor};font-weight:700">${a}↔${b}${bothSides?" 🔥":active?" ✓":""}</div>`;
+        });
+        h+='</div></div>';
+
+        // Digit ranking grid: 0-9 colored by status
+        h+='<div style="margin-bottom:10px">';
+        h+='<div style="font-size:10px;color:#6d28d9;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase">Digit Pool — Play Priority</div>';
+        h+='<div style="display:flex;gap:6px;flex-wrap:wrap">';
+        for(let d=0;d<10;d++){
+          const status=digitStatus[d];
+          const freq=an.fr[d]||0;
+          let bg,border,textColor,label;
+          if(status==="prev"){bg="#3b0764";border="#ff4e00";textColor="#fcd34d";label="LAST";}
+          else if(status==="mirror"){bg="#1e0a4a";border="#a78bfa";textColor="#c4b5fd";label="MIR";}
+          else{bg="#080d18";border="#1e293b";textColor="#334155";label="";}
+          h+=`<div style="text-align:center">`;
+          h+=`<div style="width:38px;height:38px;border-radius:6px;background:${bg};border:2px solid ${border};display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;color:${textColor}">${d}</div>`;
+          h+=`<div style="font-size:8px;color:${border};margin-top:2px;font-weight:700">${label||("×"+freq)}</div>`;
+          h+='</div>';
+        }
+        h+='</div></div>';
+
+        // Carryover note
+        if(carryover.length>0){
+          h+=`<div style="background:#0a1500;border:1px solid #166534;border-radius:6px;padding:8px 12px;font-size:12px;color:#4ade80">`;
+          h+=`♻ <b>Carryover digits</b> (appeared in both last 2 draws): <span style="font-family:monospace;font-size:14px;font-weight:900">${carryover.join(", ")}</span> — WOL: prioritize these`;
+          h+='</div>';
+        }
+
+        h+='</div>';
+      })();
+      // ── WOL Phase 3: Structure Classifier ──────────────────────────────────────
+      (function(){
+        if(!an||an.total<10)return;
+        const tc=an.tc||{};
+        const total=an.total;
+        // Get counts for each structure type
+        const singles=tc.single||tc.singles||0;
+        const doubles=tc.double||tc.doubles||0;
+        const trips=tc.triple||tc.triples||0;
+        const dpairs=tc["double-pair"]||tc.doublepair||tc["double pair"]||0;
+        const quads=tc.quad||tc.quads||0;
+
+        // Recent 20 draws structure breakdown
+        const recent=dr.slice(0,20);
+        const rCounts={single:0,double:0,triple:0,quad:0,other:0};
+        recent.forEach(d=>{
+          const t=gct(d.numbers);
+          if(t==="single")rCounts.single++;
+          else if(t==="double")rCounts.double++;
+          else if(t==="triple")rCounts.triple++;
+          else if(t==="quad")rCounts.quad++;
+          else rCounts.other++;
+        });
+
+        // Determine dominant structure overall and recently
+        const overallDom=Object.entries(tc).sort((a,b)=>b[1]-a[1])[0];
+        const recentDom=Object.entries(rCounts).sort((a,b)=>b[1]-a[1])[0];
+
+        // Is a double/triple overdue? (if last 5 were all singles)
+        const last5Types=dr.slice(0,5).map(d=>gct(d.numbers));
+        const allSingles=last5Types.every(t=>t==="single");
+        const doubleStreak=last5Types.filter(t=>t==="double").length;
+
+        const structs=[
+          {label:"Singles",count:singles,recent:rCounts.single,pct:Math.round((singles/total)*100)},
+          {label:"Doubles",count:doubles,recent:rCounts.double,pct:Math.round((doubles/total)*100)},
+          {label:"Trips",count:trips,recent:rCounts.triple,pct:Math.round((trips/total)*100)},
+          {label:"Quads",count:quads,recent:rCounts.quad,pct:Math.round((quads/total)*100)},
+        ].filter(s=>s.count>0||s.recent>0);
+
+        h+='<div class="card" style="background:#00080a;border-color:#0891b2;margin-bottom:16px">';
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+        h+='<div style="font-size:13px;font-weight:700;color:#22d3ee;letter-spacing:1px">📐 WOL STRUCTURE — Next Draw Classifier</div>';
+        h+='<div style="font-size:10px;color:#164e63;background:#083344;padding:3px 8px;border-radius:4px;letter-spacing:1px">PHASE 3</div>';
+        h+='</div>';
+
+        // Structure bars
+        h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">';
+        structs.forEach(s=>{
+          const isRecentDom=recentDom&&recentDom[0]===s.label.toLowerCase().replace("trips","triple").replace("quads","quad");
+          const isOverallDom=overallDom&&overallDom[0].toLowerCase().includes(s.label.toLowerCase().slice(0,4));
+          const border=isRecentDom?"#22d3ee":isOverallDom?"#0e7490":"#1e293b";
+          const bg=isRecentDom?"#083344":"#080d18";
+          h+=`<div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:10px;text-align:center">`;
+          h+=`<div style="font-size:18px;font-weight:900;color:${isRecentDom?"#22d3ee":"#94a3b8"}">${s.pct}%</div>`;
+          h+=`<div style="font-size:11px;color:#e2e8f0;font-weight:700;margin:2px 0">${s.label}</div>`;
+          h+=`<div style="font-size:10px;color:#475569">Last 20: ${s.recent}</div>`;
+          h+=`${isRecentDom?'<div style="font-size:9px;color:#22d3ee;margin-top:3px;font-weight:700">▲ DOMINANT NOW</div>':""}`;
+          h+='</div>';
+        });
+        h+='</div>';
+
+        // Alert if structure shift detected
+        if(allSingles&&(doubles/total)>0.25){
+          h+='<div style="background:#083344;border:1px solid #22d3ee;border-radius:6px;padding:8px 12px;font-size:12px;color:#67e8f9">⚡ Last 5 draws all singles — doubles historically hit '+Math.round((doubles/total)*100)+'% of time. WOL: consider double coverage.</div>';
+        } else if(doubleStreak>=3){
+          h+='<div style="background:#0c0a00;border:1px solid #f59e0b;border-radius:6px;padding:8px 12px;font-size:12px;color:#fcd34d">⚡ '+doubleStreak+' doubles in last 5 draws — singles may be due. WOL: shift toward single coverage.</div>';
+        }
+
+        h+='</div>';
+      })();
+
+      // ── WOL Phase 4: Hot Box Ranking ─────────────────────────────────────────
+      (function(){
+        if(!an||an.total<10)return;
+        const lastNums=dr[0]?dr[0].numbers:[];
+        if(!lastNums.length)return;
+
+        // Build candidate pool: last draw digits + their mirrors
+        const seeds=[...new Set([...lastNums,...lastNums.map(d=>String((parseInt(d)+5)%10))])];
+
+        // Score each seed digit using full analysis
+        const fr=an.fr;const total=an.total;
+        const due=an.due;
+        const hot=an.hot;
+
+        function scoreDigit(d){
+          const f=fr[d]||0;
+          const hb=hot.includes(d)?15:0;
+          const di=due.findIndex(x=>x.n===d);
+          const db=di<3?(3-di)*10:0;
+          const isLast=lastNums.includes(d)?20:0;
+          const isMirror=!lastNums.includes(d)&&lastNums.map(x=>String((parseInt(x)+5)%10)).includes(d)?10:0;
+          return (f/total)*60+hb+db+isLast+isMirror;
+        }
+
+        // Score and rank all 10 digits
+        const allScored=[];
+        for(let i=0;i<=9;i++){
+          const d=String(i);
+          allScored.push({d,score:scoreDigit(d),isLast:lastNums.includes(d),isMirror:!lastNums.includes(d)&&lastNums.map(x=>String((parseInt(x)+5)%10)).includes(d)});
+        }
+        allScored.sort((a,b)=>b.score-a.score);
+
+        const maxScore=allScored[0].score;
+        // WOL color tiers: red=top 30%, green=mid 40%, black=bottom 30%
+        allScored.forEach((d,i)=>{
+          if(i<3)d.tier="red";
+          else if(i<7)d.tier="green";
+          else d.tier="black";
+        });
+
+        h+='<div class="card" style="background:#0a0800;border-color:#b45309;margin-bottom:16px">';
+        h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+        h+='<div style="font-size:13px;font-weight:700;color:#f59e0b;letter-spacing:1px">🔥 WOL HOT BOX — Ranked Digit Pool</div>';
+        h+='<div style="font-size:10px;color:#78350f;background:#1c0a00;padding:3px 8px;border-radius:4px;letter-spacing:1px">PHASE 4</div>';
+        h+='</div>';
+
+        // Legend
+        h+='<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">';
+        h+='<div style="display:flex;align-items:center;gap:4px"><div style="width:12px;height:12px;border-radius:2px;background:#dc2626"></div><span style="font-size:10px;color:#94a3b8">Super Hot (Red)</span></div>';
+        h+='<div style="display:flex;align-items:center;gap:4px"><div style="width:12px;height:12px;border-radius:2px;background:#16a34a"></div><span style="font-size:10px;color:#94a3b8">Hot (Green)</span></div>';
+        h+='<div style="display:flex;align-items:center;gap:4px"><div style="width:12px;height:12px;border-radius:2px;background:#374151"></div><span style="font-size:10px;color:#94a3b8">Warm (Black)</span></div>';
+        h+='</div>';
+
+        // Digit boxes in tier order
+        h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
+        allScored.forEach((item,rank)=>{
+          const tierColors={red:{bg:"#450a0a",border:"#dc2626",text:"#fca5a5"},green:{bg:"#052e16",border:"#16a34a",text:"#86efac"},black:{bg:"#111827",border:"#374151",text:"#6b7280"}};
+          const tc2=tierColors[item.tier];
+          const badge=item.isLast?"LAST":item.isMirror?"MIR":"";
+          h+=`<div style="background:${tc2.bg};border:2px solid ${tc2.border};border-radius:8px;padding:8px 10px;text-align:center;min-width:52px">`;
+          h+=`<div style="font-size:20px;font-weight:900;color:${tc2.text}">${item.d}</div>`;
+          h+=`<div style="font-size:8px;color:${tc2.border};font-weight:700;margin-top:2px">#${rank+1}${badge?" · "+badge:""}</div>`;
+          h+=`<div style="font-size:9px;color:#475569;margin-top:1px">${Math.round((item.score/maxScore)*100)}%</div>`;
+          h+='</div>';
+        });
+        h+='</div>';
+
+        // Top 3 hot box combos — generate 3 combos using red digits first
+        const redDigits=allScored.filter(d=>d.tier==="red").map(d=>d.d);
+        const greenDigits=allScored.filter(d=>d.tier==="green").map(d=>d.d);
+        const dg=DIGITS[GM];
+        const hotCombos=[];
+        // Try to build combos preferring red, filling with green
+        const pool=[...redDigits,...greenDigits];
+        for(let i=0;i<3&&pool.length>=dg;i++){
+          const combo=pool.slice(0,dg-i).concat(pool.slice(dg-i,dg));
+          hotCombos.push([...new Set(combo)].slice(0,dg));
+        }
+
+        if(hotCombos.length){
+          h+='<div style="font-size:10px;color:#b45309;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase">Hot Box Combos (Red-first)</div>';
+          h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+          hotCombos.forEach(combo=>{
+            if(combo.length<dg)return;
+            h+='<div style="background:#1c0a00;border:1px solid #92400e;border-radius:6px;padding:6px 12px;font-family:monospace;font-size:15px;font-weight:900;color:#fcd34d;letter-spacing:3px">'+combo.slice(0,dg).join("")+'</div>';
+          });
+          h+='</div>';
+        }
+
+        h+='</div>';
+      })();
+
+      // ─────────────────────────────────────────────────────────────────────────
+
       h+=`<div style="display:flex;border-bottom:1px solid #1e293b;margin-bottom:18px;flex-wrap:wrap">${[["predictions","★ Preds"],["patterns","◈ Patterns"],["pairs","⊞ Pairs"],["due","⏳ Due"],["inspector","🔬 Inspector"]].map(([s,l])=>`<button class="tabb ${DS===s?"taba":"tabi"}" onclick="setDS('${s}')">${l}</button>`).join("")}</div>`;
 
       if(DS==="predictions"){
@@ -2837,6 +3236,7 @@ window.onerror = function(msg, src, line, col, err) {
 try {
   console.log("LottoIQ: starting load...");
   loadDB();
+  autoCheckResults(); // WOL auto-score past predictions against draw history
   console.log("LottoIQ: loadDB done, seeding TX...");
   seedTXData();
   console.log("LottoIQ: TX seeded, seeding all states...");
