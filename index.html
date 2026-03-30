@@ -73,7 +73,43 @@ function isE(d){return parseInt(d)%2===0}
 function gsum(n){return n.reduce((s,x)=>s+parseInt(x),0)}
 function grs(n){let s=gsum(n);while(s>9)s=String(s).split("").reduce((a,b)=>a+parseInt(b),0);return s}
 function gsld(n){return gsum(n)%10}
-function gct(n){const u=new Set(n).size;return u===n.length?"single":u===1?"triple":"double"}
+function gct(n){
+  // Full WOL structure classification for Pick 3, 4, and 5
+  const len=n.length;
+  const counts={};
+  n.forEach(function(d){counts[d]=(counts[d]||0)+1;});
+  const vals=Object.values(counts).sort((a,b)=>b-a);
+  const uniq=vals.length;
+  if(len===3){
+    if(uniq===3)return"single";          // ABC
+    if(uniq===2)return"double";          // AAB
+    return"triple";                       // AAA
+  }
+  if(len===4){
+    if(uniq===4)return"ABCD";
+    if(uniq===3)return"AABC";            // one pair + two diff
+    if(uniq===2){
+      if(vals[0]===3)return"AAAB";       // trips + one
+      if(vals[0]===2)return"AABB";       // two pairs
+    }
+    return"AAAA";                         // quad
+  }
+  if(len===5){
+    if(uniq===5)return"ABCDE";
+    if(uniq===4)return"AABCD";           // one pair + three diff
+    if(uniq===3){
+      if(vals[0]===3)return"AAABC";      // triple + two diff
+      return"AABBC";                      // two pairs + one diff
+    }
+    if(uniq===2){
+      if(vals[0]===4)return"AAAAB";      // quad + one
+      if(vals[0]===3)return"AAABB";      // triple pair
+    }
+    return"AAAAA";                        // quint
+  }
+  // fallback
+  return uniq===len?"single":uniq===1?"triple":"double";
+}
 function ghl(n){return n.map(x=>isH(x)?"H":"L").join("")}
 function geo(n){return n.map(x=>isE(x)?"E":"O").join("")}
 
@@ -127,14 +163,18 @@ function getAvailableSessions(){
 
 function analyze(drawings,game){
   const dg=DIGITS[game];
-  const fr={},pf={},cf={},ls={},hl={},eo={},sc={},rc={},sl={},tc={single:0,double:0,triple:0},fp={},bp={},mp={};
+  const fr={},pf={},cf={},ls={},hl={},eo={},sc={},rc={},sl={},tc={},fp={},bp={},mp={},rfr={};
   // Positional frequency: pos[position][digit] = count
   const pos=Array.from({length:dg},()=>({}));
 
+  const recencyWindow=Math.min(30,drawings.length);
   drawings.forEach(function(d,idx){
     const n=d.numbers;if(!n||n.length!==dg)return;
+    // Recency weight: recent draws count more (exponential decay)
+    const recWeight=idx<recencyWindow?Math.exp(-idx/15):0;
     n.forEach(function(x,pi){
       fr[x]=(fr[x]||0)+1;
+      rfr[x]=(rfr[x]||0)+recWeight; // recency-weighted frequency
       if(ls[x]===undefined)ls[x]=idx;
       pos[pi][x]=(pos[pi][x]||0)+1;
     });
@@ -158,22 +198,32 @@ function analyze(drawings,game){
   // Top digit per position
   const posTop=pos.map(function(p){return Object.entries(p).sort((a,b)=>b[1]-a[1])});
   const lastDraw=drawings.length>0?drawings[0].numbers:[];
-  return{fr,pos,posTop,due,hot,cold,topP:Object.entries(pf).sort((a,b)=>b[1]-a[1]).slice(0,10),topC:Object.entries(cf).sort((a,b)=>b[1]-a[1]).slice(0,10),topFP:Object.entries(fp).sort((a,b)=>b[1]-a[1]).slice(0,10),topBP:Object.entries(bp).sort((a,b)=>b[1]-a[1]).slice(0,10),topMP:Object.entries(mp).sort((a,b)=>b[1]-a[1]).slice(0,10),hl,eo,sc,rc,sl,tc,topHL:Object.entries(hl).sort((a,b)=>b[1]-a[1]),topEO:Object.entries(eo).sort((a,b)=>b[1]-a[1]),topS:Object.entries(sc).sort((a,b)=>b[1]-a[1]),topR:Object.entries(rc).sort((a,b)=>b[1]-a[1]),topSL:Object.entries(sl).sort((a,b)=>b[1]-a[1]),total:drawings.length,lastDraw};
+  // Recency-weighted hot/cold
+  const rfs=Object.entries(rfr).sort((a,b)=>b[1]-a[1]);
+  const rhot=rfs.slice(0,5).map(e=>e[0]);
+  const rcold=rfs.slice(-5).map(e=>e[0]);
+  return{fr,rfr,pos,posTop,due,hot,cold,rhot,rcold,topP:Object.entries(pf).sort((a,b)=>b[1]-a[1]).slice(0,10),topC:Object.entries(cf).sort((a,b)=>b[1]-a[1]).slice(0,10),topFP:Object.entries(fp).sort((a,b)=>b[1]-a[1]).slice(0,10),topBP:Object.entries(bp).sort((a,b)=>b[1]-a[1]).slice(0,10),topMP:Object.entries(mp).sort((a,b)=>b[1]-a[1]).slice(0,10),hl,eo,sc,rc,sl,tc,topHL:Object.entries(hl).sort((a,b)=>b[1]-a[1]),topEO:Object.entries(eo).sort((a,b)=>b[1]-a[1]),topS:Object.entries(sc).sort((a,b)=>b[1]-a[1]),topR:Object.entries(rc).sort((a,b)=>b[1]-a[1]),topSL:Object.entries(sl).sort((a,b)=>b[1]-a[1]),total:drawings.length,lastDraw};
 }
 
 function predict(an,game,ins){
   const dg=DIGITS[game];
   const{fr,due,hot,total,hl,eo,sc,rc,tc}=an;
   if(total<5)return[];
-  // WOL Phase 2: carryover seed — boost digits from last draw and their mirrors
+  // WOL Phase 2 + Recency: blend historical freq with recency-weighted freq
   const lastDrawNums=an.lastDraw?an.lastDraw.map(String):[];
   const mirrorOfLast=lastDrawNums.map(d=>String((parseInt(d)+5)%10));
+  const rfr=an.rfr||{};
+  const maxRfr=Math.max(...Object.values(rfr).concat([1]));
   const scores={};
   for(let i=0;i<=9;i++){
-    const n=String(i),f=fr[n]||0,hb=hot.includes(n)?15:0,di=due.findIndex(d=>d.n===n),db=di<3?(3-di)*10:0;
-    const carryBonus=lastDrawNums.includes(n)?20:0;
+    const n=String(i);
+    const histScore=(fr[n]||0)/total*40;           // historical frequency (40%)
+    const recScore=(rfr[n]||0)/maxRfr*40;          // recency-weighted frequency (40%)
+    const hb=hot.includes(n)?8:0;                  // hot bonus
+    const di=due.findIndex(d=>d.n===n),db=di<3?(3-di)*8:0; // due bonus
+    const carryBonus=lastDrawNums.includes(n)?20:0; // WOL carryover
     const mirrorBonus=mirrorOfLast.includes(n)&&!lastDrawNums.includes(n)?10:0;
-    scores[n]=(f/total)*60+hb+db+carryBonus+mirrorBonus;
+    scores[n]=histScore+recScore+hb+db+carryBonus+mirrorBonus;
   }
   if(ins){
     if(ins.keyNumbers)Object.entries(ins.keyNumbers).forEach(e=>{if(scores[e[0]]!==undefined)scores[e[0]]+=(e[1]/100)*20});
@@ -191,9 +241,84 @@ function predict(an,game,ins){
   const iS=ins&&ins.hotSums&&ins.hotSums.length?ins.hotSums:hs;
   const iR=ins&&ins.hotRoots&&ins.hotRoots.length?ins.hotRoots:hr;
   function pb(pick){let s=0;if(iHL&&ghl(pick)===iHL)s+=20;if(iEO&&geo(pick)===iEO)s+=20;if(iS.includes(gsum(pick)))s+=15;if(iR.includes(grs(pick)))s+=10;if(iT&&gct(pick)===iT)s+=15;return s}
+  // Determine dominant structure type from recent 20 draws
+  const recentDraws=an.total>0?(function(){
+    // We don't have raw drawings here, use tc counts as proxy
+    return null;
+  })():null;
+  // Get dominant structure from tc
+  const dominantStruct=iT||Object.entries(an.tc||{}).sort((a,b)=>b[1]-a[1]).map(e=>e[0])[0]||"single";
+
+  function makeStructuredPick(targetType,scoreMap,dg){
+    // Generate a pick that matches the target structure type
+    const sorted=Object.entries(scoreMap).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+    const pick=[];
+    if(dg===3){
+      if(targetType==="double"){
+        // AAB: pick one digit twice, one different
+        const d1=sorted[0];
+        const d2=sorted.find(x=>x!==d1)||sorted[1];
+        const pos=[0,1,2];pos.sort(()=>Math.random()-0.5);
+        pick[pos[0]]=d1;pick[pos[1]]=d1;pick[pos[2]]=d2;
+      } else if(targetType==="triple"){
+        pick.push(sorted[0],sorted[0],sorted[0]);
+      } else {
+        // single ABC
+        for(let p=0;p<3;p++){const pool=sorted.filter(x=>!pick.includes(x));pick.push((pool[0]||sorted[p%sorted.length]));}
+      }
+    } else if(dg===4){
+      if(targetType==="AABB"){
+        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1];
+        const arr=[d1,d1,d2,d2];arr.sort(()=>Math.random()-0.5);
+        arr.forEach(x=>pick.push(x));
+      } else if(targetType==="AABC"){
+        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1],d3=sorted.find(x=>x!==d1&&x!==d2)||sorted[2];
+        const arr=[d1,d1,d2,d3];arr.sort(()=>Math.random()-0.5);
+        arr.forEach(x=>pick.push(x));
+      } else if(targetType==="AAAB"){
+        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1];
+        const arr=[d1,d1,d1,d2];arr.sort(()=>Math.random()-0.5);
+        arr.forEach(x=>pick.push(x));
+      } else {
+        // ABCD default
+        for(let p=0;p<4;p++){const pool=sorted.filter(x=>!pick.includes(x));pick.push(pool[0]||sorted[p%sorted.length]);}
+      }
+    } else if(dg===5){
+      if(targetType==="AABCD"){
+        const d1=sorted[0],rest=sorted.filter(x=>x!==d1).slice(0,3);
+        const arr=[d1,d1,...rest];arr.sort(()=>Math.random()-0.5);
+        arr.forEach(x=>pick.push(x));
+      } else if(targetType==="AABBC"){
+        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1],d3=sorted.find(x=>x!==d1&&x!==d2)||sorted[2];
+        const arr=[d1,d1,d2,d2,d3];arr.sort(()=>Math.random()-0.5);
+        arr.forEach(x=>pick.push(x));
+      } else if(targetType==="AAABC"){
+        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1],d3=sorted.find(x=>x!==d1&&x!==d2)||sorted[2];
+        const arr=[d1,d1,d1,d2,d3];arr.sort(()=>Math.random()-0.5);
+        arr.forEach(x=>pick.push(x));
+      } else {
+        // ABCDE default
+        for(let p=0;p<5;p++){const pool=sorted.filter(x=>!pick.includes(x));pick.push(pool[0]||sorted[p%sorted.length]);}
+      }
+    }
+    return pick.length===dg?pick:null;
+  }
+
   const picks=[],seen=new Set();
-  for(let att=0;att<1000&&picks.length<5;att++){
-    const pick=[];for(let p=0;p<dg;p++){const pool=Object.entries(scores).sort(()=>Math.random()-0.45);pick.push(pool[0][0])}
+  // Generate 3 structure-matched picks + 2 open picks
+  const structTargets=[dominantStruct,dominantStruct,"open","open","open"];
+  for(let att=0;att<2000&&picks.length<5;att++){
+    const useStruct=structTargets[picks.length]!=="open";
+    let pick;
+    if(useStruct){
+      pick=makeStructuredPick(dominantStruct,scores,dg);
+      if(!pick)pick=[];
+    }
+    if(!pick||!pick.length){
+      pick=[];
+      for(let p=0;p<dg;p++){const pool=Object.entries(scores).sort(()=>Math.random()-0.45);pick.push(pool[0][0]);}
+    }
+    if(pick.length!==dg)continue;
     const key=[...pick].sort().join("-");if(seen.has(key))continue;seen.add(key);
     const base=pick.reduce((s,n)=>s+scores[n],0)/dg;
     const conf=Math.min(99,Math.round((base/mp)*70+pb(pick)));
@@ -1421,6 +1546,7 @@ function render(){
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Straight</span><span style="font-family:monospace;color:#e2e8f0">${p.straight}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Box</span><span style="font-family:monospace;color:#e2e8f0">${p.box}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Mirror</span><span style="font-family:monospace;color:#a78bfa">${mirrorNum(p.numbers)}</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Type</span><span style="font-family:monospace;color:#c084fc">${p.type}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>H/L</span><span style="font-family:monospace;color:#f9c74f">${p.hl}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>E/O</span><span style="font-family:monospace;color:#00b4d8">${p.eo}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Sum</span><span style="font-family:monospace;color:#94a3b8">${p.sum}</span></div>
@@ -1429,8 +1555,8 @@ function render(){
         });
         h+=`</div>${AIT?`<div style="margin-top:16px;background:#080d18;border:1px solid #ff4e0033;border-radius:8px;padding:14px;color:#94a3b8;font-size:14px;line-height:1.7;font-style:italic">"${AIT}"</div>`:""}</div>`;
         h+=`<div class="g3">
-          <div class="card"><div class="ct">🔥 Hot</div><div style="display:flex;gap:6px;flex-wrap:wrap">${an.hot.map(n=>`<div style="text-align:center">${ball(n,true,40)}<div style="font-size:10px;color:#ff4e00;margin-top:2px">×${an.fr[n]||0}</div></div>`).join("")}</div></div>
-          <div class="card"><div class="ct">🧊 Cold</div><div style="display:flex;gap:6px;flex-wrap:wrap">${an.cold.map(n=>`<div style="text-align:center">${ball(n,false,40)}<div style="font-size:10px;color:#00b4d8;margin-top:2px">×${an.fr[n]||0}</div></div>`).join("")}</div></div>
+          <div class="card"><div class="ct">🔥 Hot (Recent)</div><div style="font-size:10px;color:#475569;margin-bottom:6px">Last 30 draws weighted</div><div style="display:flex;gap:6px;flex-wrap:wrap">${(an.rhot||an.hot).map(n=>`<div style="text-align:center">${ball(n,true,40)}<div style="font-size:10px;color:#ff4e00;margin-top:2px">×${an.fr[n]||0}</div></div>`).join("")}</div></div>
+          <div class="card"><div class="ct">🧊 Cold (Recent)</div><div style="font-size:10px;color:#475569;margin-bottom:6px">Last 30 draws weighted</div><div style="display:flex;gap:6px;flex-wrap:wrap">${(an.rcold||an.cold).map(n=>`<div style="text-align:center">${ball(n,false,40)}<div style="font-size:10px;color:#00b4d8;margin-top:2px">×${an.fr[n]||0}</div></div>`).join("")}</div></div>
           <div class="card"><div class="ct">⏳ Due</div>${an.due.slice(0,5).map((d,i)=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:7px">${ball(d.n,false,28)}<div style="flex:1"><div style="font-size:10px;color:#475569">${d.last===an.total?"never":d.last+" ago"}</div><div style="height:4px;border-radius:2px;background:#1e293b;margin-top:2px"><div style="height:4px;border-radius:2px;background:#f9c74f;width:${Math.min(100,(d.last/an.total)*100)}%"></div></div></div></div>`).join("")}</div>
         </div>`;
       }
@@ -1438,7 +1564,13 @@ function render(){
         h+='<div class="g2">';
         h+='<div class="card"><div class="ct">⬆⬇ High/Low</div>'+an.topHL.map(function(e,i){return srow(e[0],e[1],Math.round((e[1]/an.total)*100),an.total,i===0)}).join("")+'</div>';
         h+='<div class="card"><div class="ct">⚖ Even/Odd</div>'+an.topEO.map(function(e,i){return srow(e[0],e[1],Math.round((e[1]/an.total)*100),an.total,i===0)}).join("")+'</div>';
-        h+='<div class="card"><div class="ct">🎯 Combo Types</div>'+Object.entries(an.tc).sort(function(a,b){return b[1]-a[1]}).map(function(e){return srow(e[0],e[1],Math.round((e[1]/an.total)*100),an.total,false)}).join("")+'</div>';
+        h+='<div class="card"><div class="ct">🎯 WOL Structure Types</div>';
+        h+=Object.entries(an.tc).sort(function(a,b){return b[1]-a[1]}).map(function(e){
+          const labels={"ABCD":"ABCD — 4 diff","AABC":"AABC — pair+2","AABB":"AABB — 2 pairs","AAAB":"AAAB — trips+1","AAAA":"AAAA — quad","ABCDE":"ABCDE — all diff","AABCD":"AABCD — pair+3","AABBC":"AABBC — 2 pairs+1","AAABC":"AAABC — trips+2","AAABB":"AAABB — trips+pair","AAAAB":"AAAAB — quad+1","AAAAA":"AAAAA — quint","single":"Single (ABC)","double":"Double (AAB)","triple":"Triple (AAA)"};
+          const label=labels[e[0]]||e[0];
+          return srow(label,e[1],Math.round((e[1]/an.total)*100),an.total,false);
+        }).join('');
+        h+='</div>';
         h+='<div class="card"><div class="ct">∑ Top Sums</div>'+an.topS.slice(0,12).map(function(e,i){return srow("Sum "+e[0],e[1],Math.round((e[1]/an.total)*100),an.total,i===0)}).join("")+'</div>';
         h+='<div class="card"><div class="ct">∮ Root Sums</div>'+an.topR.map(function(e,i){return srow("Root "+e[0],e[1],Math.round((e[1]/an.total)*100),an.total,i===0)}).join("")+'</div>';
         h+='<div class="card"><div class="ct"># Sum Last Digit</div>'+an.topSL.map(function(e,i){return srow("SLD "+e[0],e[1],Math.round((e[1]/an.total)*100),an.total,i===0)}).join("")+'</div>';
@@ -1545,6 +1677,35 @@ function render(){
           if(ins.sumCounts){const t=Object.values(ins.sumCounts).reduce((s,v)=>s+v,0);const hs=ins.hotSums||[];h+=`<div class="card"><div class="ct">Inspector Sums</div>${Object.entries(ins.sumCounts).sort((a,b)=>b[1]-a[1]).slice(0,12).map(e=>srow("Sum "+e[0],e[1],Math.round((e[1]/t)*100),t,hs.includes(parseInt(e[0])))).join("")}</div>`}
           if(ins.topPairs)h+=`<div class="card"><div class="ct">Inspector Pairs</div>${ins.topPairs.slice(0,12).map(e=>`<div class="pr"><span style="font-family:monospace;font-weight:700">${e[0]}</span><span style="color:#ff4e00">${e[1]}</span></div>`).join("")}</div>`;
           h+=`</div>`;
+          // ── Pick 4 Combo Overdue data (from spreadsheet) ──────────────────
+          if(GM==="Pick 4"&&(ins.comboDue||ins.comboNotDrawn)){
+            h+=`<div style="margin-top:16px"><div style="font-size:11px;color:#334155;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">📊 Pick 4 Box Combination Data</div>`;
+            if(ins.comboNotDrawn&&ins.comboNotDrawn.length){
+              h+=`<div class="card" style="border-color:#450a0a"><div class="ct" style="color:#ef4444">🚫 Never Drawn (${ins.comboNotDrawn.length} combos)</div>`;
+              h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">`;
+              ins.comboNotDrawn.forEach(function(c){
+                h+=`<span style="font-family:monospace;font-weight:800;font-size:13px;background:#450a0a;border:1px solid #dc2626;border-radius:4px;padding:3px 8px;color:#fca5a5">${c}</span>`;
+              });
+              h+=`</div></div>`;
+            }
+            if(ins.comboDue&&ins.comboDue.length){
+              h+=`<div class="card"><div class="ct">⏳ Most Overdue Box Combos</div>`;
+              h+=`<div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:4px;padding:3px 0;border-bottom:1px solid #1e293b;font-size:9px;font-weight:700;color:#334155;text-transform:uppercase;letter-spacing:1px"><span>Combo</span><span>Last Seen</span><span style="text-align:right">Draws Out</span><span></span></div>`;
+              ins.comboDue.slice(0,30).forEach(function(c){
+                const ds=c.drawsSince||0;
+                const color=ds>=5000?"#ef4444":ds>=3000?"#f97316":ds>=1000?"#f9c74f":"#94a3b8";
+                h+=`<div style="display:grid;grid-template-columns:auto 1fr auto auto;gap:6px;padding:5px 0;border-bottom:1px solid #0f172a;align-items:center">`;
+                h+=`<span style="font-family:monospace;font-weight:900;font-size:14px;color:${color}">${c.combo}</span>`;
+                h+=`<span style="font-size:10px;color:#475569">${c.lastSeen||"—"}</span>`;
+                h+=`<span style="font-size:12px;font-weight:700;color:${color};text-align:right">${ds.toLocaleString()}</span>`;
+                h+=`<span></span>`;
+                h+=`</div>`;
+              });
+              h+=`</div>`;
+            }
+            h+=`</div>`;
+          }
+
           // ── LotteryPost Combinations Inspector data (Pick 3 only) ─────────
           if(ins.dueBoxes||ins.dueDoubles||ins.frontPairs||ins.backPairs||ins.topStraights){
             h+=`<div style="margin-top:16px"><div style="font-size:11px;color:#334155;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">📋 Combinations Inspector Data</div><div class="g2">`;
@@ -2294,6 +2455,30 @@ function seedTXData(){
 }
 
 // ── Seed all collected 2026 data ─────────────────────────────────────────────
+function seedP4Inspector(key, notDrawn, overdue){
+  try{
+    if(!DB.inspector[key])DB.inspector[key]={};
+    DB.inspector[key].comboNotDrawn=notDrawn;
+    DB.inspector[key].comboDue=overdue;
+  }catch(e){console.warn("seedP4Inspector failed for "+key,e);}
+}
+
+function seedAllP4Combos(){
+  try{
+    seedP4Inspector("DC|Pick 4",["1111", "1117", "1666", "2228", "3336", "3399", "3999", "4447", "4449", "4666", "4999", "5555", "7777", "7779", "8999"],[{"combo": "0555", "drawsSince": 5602, "lastSeen": "Nov 20, 2019"}, {"combo": "5569", "drawsSince": 5387, "lastSeen": "Mar 7, 2020"}, {"combo": "2226", "drawsSince": 5101, "lastSeen": "Jul 28, 2020"}, {"combo": "1112", "drawsSince": 5000, "lastSeen": "Sep 16, 2020"}, {"combo": "3388", "drawsSince": 4761, "lastSeen": "Jan 14, 2021"}, {"combo": "6888", "drawsSince": 4705, "lastSeen": "Feb 11, 2021"}, {"combo": "6777", "drawsSince": 4684, "lastSeen": "Feb 21, 2021"}, {"combo": "0446", "drawsSince": 4570, "lastSeen": "Apr 19, 2021"}, {"combo": "6999", "drawsSince": 4257, "lastSeen": "Sep 23, 2021"}, {"combo": "0004", "drawsSince": 4212, "lastSeen": "Oct 15, 2021"}, {"combo": "3666", "drawsSince": 4107, "lastSeen": "Dec 7, 2021"}, {"combo": "0007", "drawsSince": 4004, "lastSeen": "Jan 27, 2022"}, {"combo": "5599", "drawsSince": 3965, "lastSeen": "Feb 16, 2022"}, {"combo": "1118", "drawsSince": 3486, "lastSeen": "Oct 13, 2022"}, {"combo": "0006", "drawsSince": 3480, "lastSeen": "Oct 16, 2022"}, {"combo": "1359", "drawsSince": 3364, "lastSeen": "Dec 13, 2022"}, {"combo": "1777", "drawsSince": 3332, "lastSeen": "Dec 29, 2022"}, {"combo": "3335", "drawsSince": 3316, "lastSeen": "Jan 6, 2023"}, {"combo": "1333", "drawsSince": 3295, "lastSeen": "Jan 17, 2023"}, {"combo": "0035", "drawsSince": 3284, "lastSeen": "Jan 22, 2023"}, {"combo": "0066", "drawsSince": 3235, "lastSeen": "Feb 16, 2023"}, {"combo": "2799", "drawsSince": 3219, "lastSeen": "Feb 24, 2023"}, {"combo": "2229", "drawsSince": 3218, "lastSeen": "Feb 24, 2023"}, {"combo": "1779", "drawsSince": 3198, "lastSeen": "Mar 6, 2023"}, {"combo": "2267", "drawsSince": 3169, "lastSeen": "Mar 21, 2023"}, {"combo": "5666", "drawsSince": 3033, "lastSeen": "May 28, 2023"}, {"combo": "0222", "drawsSince": 3006, "lastSeen": "Jun 10, 2023"}, {"combo": "4455", "drawsSince": 2985, "lastSeen": "Jun 21, 2023"}, {"combo": "6666", "drawsSince": 2983, "lastSeen": "Jun 22, 2023"}, {"combo": "3333", "drawsSince": 2979, "lastSeen": "Jun 24, 2023"}, {"combo": "3556", "drawsSince": 2956, "lastSeen": "Jul 5, 2023"}, {"combo": "1222", "drawsSince": 2885, "lastSeen": "Aug 10, 2023"}, {"combo": "5568", "drawsSince": 2868, "lastSeen": "Aug 16, 2023"}, {"combo": "2788", "drawsSince": 2861, "lastSeen": "Aug 19, 2023"}, {"combo": "0337", "drawsSince": 2857, "lastSeen": "Aug 20, 2023"}, {"combo": "1233", "drawsSince": 2840, "lastSeen": "Aug 26, 2023"}, {"combo": "2777", "drawsSince": 2780, "lastSeen": "Sep 15, 2023"}, {"combo": "3888", "drawsSince": 2747, "lastSeen": "Sep 26, 2023"}, {"combo": "0000", "drawsSince": 2653, "lastSeen": "Oct 27, 2023"}, {"combo": "2444", "drawsSince": 2621, "lastSeen": "Nov 7, 2023"}, {"combo": "3355", "drawsSince": 2506, "lastSeen": "Dec 15, 2023"}, {"combo": "0011", "drawsSince": 2458, "lastSeen": "Dec 31, 2023"}, {"combo": "2999", "drawsSince": 2455, "lastSeen": "Jan 1, 2024"}, {"combo": "6677", "drawsSince": 2450, "lastSeen": "Jan 3, 2024"}, {"combo": "2377", "drawsSince": 2435, "lastSeen": "Jan 8, 2024"}, {"combo": "0588", "drawsSince": 2365, "lastSeen": "Jan 31, 2024"}, {"combo": "6669", "drawsSince": 2318, "lastSeen": "Feb 16, 2024"}, {"combo": "1226", "drawsSince": 2310, "lastSeen": "Feb 18, 2024"}, {"combo": "4479", "drawsSince": 2300, "lastSeen": "Feb 22, 2024"}, {"combo": "5999", "drawsSince": 2282, "lastSeen": "Feb 28, 2024"}]);
+    seedP4Inspector("VA|Pick 4",["0011", "0111", "0333", "0555", "1111", "1115", "1222", "1555", "2222", "2255", "2999", "3333", "3338", "4446", "5556", "5559", "6667", "6777", "6999", "7777", "8889"],[{"combo": "4466", "drawsSince": 5109, "lastSeen": "Apr 1, 2019"}, {"combo": "3448", "drawsSince": 5091, "lastSeen": "Apr 10, 2019"}, {"combo": "3555", "drawsSince": 5028, "lastSeen": "May 11, 2019"}, {"combo": "1177", "drawsSince": 4918, "lastSeen": "Jul 5, 2019"}, {"combo": "4455", "drawsSince": 4887, "lastSeen": "Jul 21, 2019"}, {"combo": "2233", "drawsSince": 4747, "lastSeen": "Sep 29, 2019"}, {"combo": "0005", "drawsSince": 4667, "lastSeen": "Nov 8, 2019"}, {"combo": "5599", "drawsSince": 4606, "lastSeen": "Dec 8, 2019"}, {"combo": "1137", "drawsSince": 4535, "lastSeen": "Jan 13, 2020"}, {"combo": "5888", "drawsSince": 4407, "lastSeen": "Mar 17, 2020"}, {"combo": "2269", "drawsSince": 4355, "lastSeen": "Apr 12, 2020"}, {"combo": "1777", "drawsSince": 4209, "lastSeen": "Jun 24, 2020"}, {"combo": "7788", "drawsSince": 4189, "lastSeen": "Jul 4, 2020"}, {"combo": "3666", "drawsSince": 4188, "lastSeen": "Jul 4, 2020"}, {"combo": "2228", "drawsSince": 4185, "lastSeen": "Jul 6, 2020"}, {"combo": "0888", "drawsSince": 4085, "lastSeen": "Aug 25, 2020"}, {"combo": "3334", "drawsSince": 4064, "lastSeen": "Sep 4, 2020"}, {"combo": "1225", "drawsSince": 4031, "lastSeen": "Sep 21, 2020"}, {"combo": "1112", "drawsSince": 4030, "lastSeen": "Sep 21, 2020"}, {"combo": "0009", "drawsSince": 4027, "lastSeen": "Sep 23, 2020"}, {"combo": "6666", "drawsSince": 4004, "lastSeen": "Oct 4, 2020"}, {"combo": "3778", "drawsSince": 3929, "lastSeen": "Nov 11, 2020"}, {"combo": "0599", "drawsSince": 3799, "lastSeen": "Jan 15, 2021"}, {"combo": "7888", "drawsSince": 3758, "lastSeen": "Feb 4, 2021"}, {"combo": "0044", "drawsSince": 3646, "lastSeen": "Apr 1, 2021"}, {"combo": "7779", "drawsSince": 3610, "lastSeen": "Apr 19, 2021"}, {"combo": "4699", "drawsSince": 3484, "lastSeen": "Jun 21, 2021"}, {"combo": "3358", "drawsSince": 3334, "lastSeen": "Sep 4, 2021"}, {"combo": "2224", "drawsSince": 3327, "lastSeen": "Sep 8, 2021"}, {"combo": "1119", "drawsSince": 3301, "lastSeen": "Sep 21, 2021"}, {"combo": "0777", "drawsSince": 3294, "lastSeen": "Sep 24, 2021"}, {"combo": "0003", "drawsSince": 3255, "lastSeen": "Oct 14, 2021"}, {"combo": "0008", "drawsSince": 3224, "lastSeen": "Oct 29, 2021"}, {"combo": "3355", "drawsSince": 3213, "lastSeen": "Nov 4, 2021"}, {"combo": "1166", "drawsSince": 3199, "lastSeen": "Nov 11, 2021"}, {"combo": "5668", "drawsSince": 3189, "lastSeen": "Nov 16, 2021"}, {"combo": "0056", "drawsSince": 3124, "lastSeen": "Dec 18, 2021"}, {"combo": "1666", "drawsSince": 3116, "lastSeen": "Dec 22, 2021"}, {"combo": "3336", "drawsSince": 3046, "lastSeen": "Jan 26, 2022"}, {"combo": "1466", "drawsSince": 2954, "lastSeen": "Mar 13, 2022"}, {"combo": "6688", "drawsSince": 2878, "lastSeen": "Apr 20, 2022"}, {"combo": "2555", "drawsSince": 2820, "lastSeen": "May 19, 2022"}, {"combo": "1114", "drawsSince": 2776, "lastSeen": "Jun 10, 2022"}, {"combo": "0556", "drawsSince": 2770, "lastSeen": "Jun 13, 2022"}, {"combo": "7778", "drawsSince": 2756, "lastSeen": "Jun 20, 2022"}, {"combo": "1118", "drawsSince": 2754, "lastSeen": "Jun 21, 2022"}, {"combo": "1128", "drawsSince": 2747, "lastSeen": "Jun 25, 2022"}, {"combo": "0222", "drawsSince": 2737, "lastSeen": "Jun 30, 2022"}, {"combo": "2444", "drawsSince": 2685, "lastSeen": "Jul 26, 2022"}, {"combo": "0399", "drawsSince": 2636, "lastSeen": "Aug 19, 2022"}]);
+    seedP4Inspector("TX|Pick 4",["2225", "5555", "6666", "7777", "8888"],[{"combo": "4444", "drawsSince": 8537, "lastSeen": "Jun 4, 2019"}, {"combo": "7779", "drawsSince": 8533, "lastSeen": "Jun 5, 2019"}, {"combo": "4777", "drawsSince": 8422, "lastSeen": "Jul 8, 2019"}, {"combo": "1113", "drawsSince": 7551, "lastSeen": "Mar 18, 2020"}, {"combo": "2277", "drawsSince": 7462, "lastSeen": "Apr 13, 2020"}, {"combo": "0002", "drawsSince": 6822, "lastSeen": "Oct 16, 2020"}, {"combo": "3339", "drawsSince": 6487, "lastSeen": "Jan 22, 2021"}, {"combo": "2229", "drawsSince": 6454, "lastSeen": "Feb 1, 2021"}, {"combo": "4447", "drawsSince": 6294, "lastSeen": "Mar 19, 2021"}, {"combo": "2777", "drawsSince": 5941, "lastSeen": "Jun 30, 2021"}, {"combo": "3477", "drawsSince": 5789, "lastSeen": "Aug 13, 2021"}, {"combo": "0778", "drawsSince": 5691, "lastSeen": "Sep 11, 2021"}, {"combo": "1199", "drawsSince": 5440, "lastSeen": "Nov 23, 2021"}, {"combo": "1147", "drawsSince": 5314, "lastSeen": "Dec 30, 2021"}, {"combo": "3336", "drawsSince": 5128, "lastSeen": "Feb 22, 2022"}, {"combo": "0000", "drawsSince": 4861, "lastSeen": "May 11, 2022"}, {"combo": "0009", "drawsSince": 4759, "lastSeen": "Jun 10, 2022"}, {"combo": "6669", "drawsSince": 4712, "lastSeen": "Jun 23, 2022"}, {"combo": "7888", "drawsSince": 4691, "lastSeen": "Jun 30, 2022"}, {"combo": "5999", "drawsSince": 4591, "lastSeen": "Jul 29, 2022"}, {"combo": "5599", "drawsSince": 4590, "lastSeen": "Jul 29, 2022"}, {"combo": "4599", "drawsSince": 4486, "lastSeen": "Aug 29, 2022"}, {"combo": "4488", "drawsSince": 4422, "lastSeen": "Sep 16, 2022"}, {"combo": "7788", "drawsSince": 4359, "lastSeen": "Oct 5, 2022"}, {"combo": "3366", "drawsSince": 4107, "lastSeen": "Dec 17, 2022"}, {"combo": "5579", "drawsSince": 4029, "lastSeen": "Jan 9, 2023"}, {"combo": "0777", "drawsSince": 4004, "lastSeen": "Jan 16, 2023"}, {"combo": "6668", "drawsSince": 3940, "lastSeen": "Feb 3, 2023"}, {"combo": "4555", "drawsSince": 3658, "lastSeen": "Apr 27, 2023"}, {"combo": "5888", "drawsSince": 3559, "lastSeen": "May 26, 2023"}, {"combo": "6889", "drawsSince": 3462, "lastSeen": "Jun 23, 2023"}, {"combo": "1111", "drawsSince": 3454, "lastSeen": "Jun 26, 2023"}, {"combo": "0058", "drawsSince": 3416, "lastSeen": "Jul 6, 2023"}, {"combo": "4448", "drawsSince": 3395, "lastSeen": "Jul 13, 2023"}, {"combo": "3666", "drawsSince": 3392, "lastSeen": "Jul 13, 2023"}, {"combo": "2223", "drawsSince": 3389, "lastSeen": "Jul 14, 2023"}, {"combo": "6689", "drawsSince": 3380, "lastSeen": "Jul 17, 2023"}, {"combo": "1116", "drawsSince": 3273, "lastSeen": "Aug 17, 2023"}, {"combo": "1456", "drawsSince": 3224, "lastSeen": "Aug 31, 2023"}, {"combo": "5677", "drawsSince": 3209, "lastSeen": "Sep 5, 2023"}, {"combo": "2333", "drawsSince": 3177, "lastSeen": "Sep 14, 2023"}, {"combo": "1266", "drawsSince": 3163, "lastSeen": "Sep 19, 2023"}, {"combo": "0004", "drawsSince": 3063, "lastSeen": "Oct 18, 2023"}, {"combo": "0224", "drawsSince": 3058, "lastSeen": "Oct 19, 2023"}, {"combo": "0449", "drawsSince": 3035, "lastSeen": "Oct 26, 2023"}, {"combo": "2556", "drawsSince": 3010, "lastSeen": "Nov 2, 2023"}, {"combo": "1222", "drawsSince": 2988, "lastSeen": "Nov 8, 2023"}, {"combo": "0066", "drawsSince": 2987, "lastSeen": "Nov 9, 2023"}, {"combo": "4888", "drawsSince": 2980, "lastSeen": "Nov 10, 2023"}, {"combo": "1155", "drawsSince": 2945, "lastSeen": "Nov 21, 2023"}]);
+    seedP4Inspector("PA|Pick 4",["0000", "0002", "0088", "1333", "2222", "2223", "3333", "3336", "3344", "3366", "3555", "4447", "4577", "5555", "6666", "7777", "8889", "8899", "9999"],[{"combo": "0004", "drawsSince": 4979, "lastSeen": "Jun 5, 2019"}, {"combo": "5777", "drawsSince": 4823, "lastSeen": "Aug 22, 2019"}, {"combo": "0113", "drawsSince": 4727, "lastSeen": "Oct 9, 2019"}, {"combo": "5558", "drawsSince": 4409, "lastSeen": "Mar 16, 2020"}, {"combo": "1166", "drawsSince": 4299, "lastSeen": "May 10, 2020"}, {"combo": "6668", "drawsSince": 4280, "lastSeen": "May 19, 2020"}, {"combo": "1113", "drawsSince": 4138, "lastSeen": "Jul 29, 2020"}, {"combo": "1144", "drawsSince": 4069, "lastSeen": "Sep 2, 2020"}, {"combo": "5556", "drawsSince": 4037, "lastSeen": "Sep 18, 2020"}, {"combo": "0888", "drawsSince": 4000, "lastSeen": "Oct 6, 2020"}, {"combo": "2899", "drawsSince": 3973, "lastSeen": "Oct 20, 2020"}, {"combo": "4668", "drawsSince": 3757, "lastSeen": "Feb 5, 2021"}, {"combo": "0299", "drawsSince": 3688, "lastSeen": "Mar 11, 2021"}, {"combo": "2258", "drawsSince": 3669, "lastSeen": "Mar 21, 2021"}, {"combo": "0111", "drawsSince": 3645, "lastSeen": "Apr 2, 2021"}, {"combo": "4477", "drawsSince": 3603, "lastSeen": "Apr 23, 2021"}, {"combo": "1133", "drawsSince": 3479, "lastSeen": "Jun 24, 2021"}, {"combo": "1177", "drawsSince": 3419, "lastSeen": "Jul 24, 2021"}, {"combo": "0008", "drawsSince": 3398, "lastSeen": "Aug 3, 2021"}, {"combo": "2226", "drawsSince": 3344, "lastSeen": "Aug 30, 2021"}, {"combo": "0001", "drawsSince": 3236, "lastSeen": "Oct 23, 2021"}, {"combo": "4778", "drawsSince": 3124, "lastSeen": "Dec 18, 2021"}, {"combo": "2666", "drawsSince": 3110, "lastSeen": "Dec 25, 2021"}, {"combo": "3334", "drawsSince": 3034, "lastSeen": "Feb 1, 2022"}, {"combo": "8999", "drawsSince": 2971, "lastSeen": "Mar 5, 2022"}, {"combo": "2466", "drawsSince": 2927, "lastSeen": "Mar 27, 2022"}, {"combo": "2333", "drawsSince": 2917, "lastSeen": "Apr 1, 2022"}, {"combo": "1155", "drawsSince": 2828, "lastSeen": "May 15, 2022"}, {"combo": "0288", "drawsSince": 2786, "lastSeen": "Jun 5, 2022"}, {"combo": "0044", "drawsSince": 2781, "lastSeen": "Jun 8, 2022"}, {"combo": "3889", "drawsSince": 2775, "lastSeen": "Jun 11, 2022"}, {"combo": "5666", "drawsSince": 2733, "lastSeen": "Jul 2, 2022"}, {"combo": "0189", "drawsSince": 2705, "lastSeen": "Jul 16, 2022"}, {"combo": "0366", "drawsSince": 2694, "lastSeen": "Jul 21, 2022"}, {"combo": "4468", "drawsSince": 2684, "lastSeen": "Jul 26, 2022"}, {"combo": "3367", "drawsSince": 2636, "lastSeen": "Aug 19, 2022"}, {"combo": "7799", "drawsSince": 2609, "lastSeen": "Sep 2, 2022"}, {"combo": "2446", "drawsSince": 2600, "lastSeen": "Sep 6, 2022"}, {"combo": "1789", "drawsSince": 2552, "lastSeen": "Sep 30, 2022"}, {"combo": "2257", "drawsSince": 2511, "lastSeen": "Oct 21, 2022"}, {"combo": "4666", "drawsSince": 2502, "lastSeen": "Oct 25, 2022"}, {"combo": "2555", "drawsSince": 2495, "lastSeen": "Oct 29, 2022"}, {"combo": "1118", "drawsSince": 2436, "lastSeen": "Nov 27, 2022"}, {"combo": "0019", "drawsSince": 2433, "lastSeen": "Nov 29, 2022"}, {"combo": "6669", "drawsSince": 2430, "lastSeen": "Nov 30, 2022"}, {"combo": "1388", "drawsSince": 2406, "lastSeen": "Dec 12, 2022"}, {"combo": "5577", "drawsSince": 2391, "lastSeen": "Dec 20, 2022"}, {"combo": "1577", "drawsSince": 2373, "lastSeen": "Dec 29, 2022"}, {"combo": "4588", "drawsSince": 2372, "lastSeen": "Dec 29, 2022"}, {"combo": "1366", "drawsSince": 2360, "lastSeen": "Jan 4, 2023"}]);
+    seedP4Inspector("OH|Pick 4",["0006", "0009", "0023", "0999", "1111", "1113", "1116", "1118", "1333", "1999", "4444", "4449", "5555", "5559", "7777", "8888"],[{"combo": "6668", "drawsSince": 5013, "lastSeen": "May 19, 2019"}, {"combo": "4666", "drawsSince": 4947, "lastSeen": "Jun 21, 2019"}, {"combo": "4888", "drawsSince": 4875, "lastSeen": "Jul 27, 2019"}, {"combo": "0777", "drawsSince": 4657, "lastSeen": "Nov 13, 2019"}, {"combo": "2888", "drawsSince": 4595, "lastSeen": "Dec 14, 2019"}, {"combo": "4555", "drawsSince": 4581, "lastSeen": "Dec 21, 2019"}, {"combo": "6699", "drawsSince": 4398, "lastSeen": "Mar 21, 2020"}, {"combo": "3333", "drawsSince": 4325, "lastSeen": "Apr 27, 2020"}, {"combo": "8899", "drawsSince": 4312, "lastSeen": "May 3, 2020"}, {"combo": "2277", "drawsSince": 4154, "lastSeen": "Jul 21, 2020"}, {"combo": "2299", "drawsSince": 4116, "lastSeen": "Aug 9, 2020"}, {"combo": "0888", "drawsSince": 3992, "lastSeen": "Oct 10, 2020"}, {"combo": "0036", "drawsSince": 3801, "lastSeen": "Jan 14, 2021"}, {"combo": "2266", "drawsSince": 3782, "lastSeen": "Jan 23, 2021"}, {"combo": "1177", "drawsSince": 3713, "lastSeen": "Feb 27, 2021"}, {"combo": "1888", "drawsSince": 3709, "lastSeen": "Mar 1, 2021"}, {"combo": "2399", "drawsSince": 3678, "lastSeen": "Mar 16, 2021"}, {"combo": "9999", "drawsSince": 3653, "lastSeen": "Mar 29, 2021"}, {"combo": "2225", "drawsSince": 3646, "lastSeen": "Apr 1, 2021"}, {"combo": "1158", "drawsSince": 3339, "lastSeen": "Sep 2, 2021"}, {"combo": "1114", "drawsSince": 3286, "lastSeen": "Sep 28, 2021"}, {"combo": "0037", "drawsSince": 3224, "lastSeen": "Oct 29, 2021"}, {"combo": "2228", "drawsSince": 3172, "lastSeen": "Nov 24, 2021"}, {"combo": "0044", "drawsSince": 3151, "lastSeen": "Dec 5, 2021"}, {"combo": "3388", "drawsSince": 3136, "lastSeen": "Dec 12, 2021"}, {"combo": "5666", "drawsSince": 3116, "lastSeen": "Dec 22, 2021"}, {"combo": "0007", "drawsSince": 3097, "lastSeen": "Jan 1, 2022"}, {"combo": "1338", "drawsSince": 3092, "lastSeen": "Jan 3, 2022"}, {"combo": "3555", "drawsSince": 3079, "lastSeen": "Jan 10, 2022"}, {"combo": "3335", "drawsSince": 3049, "lastSeen": "Jan 25, 2022"}, {"combo": "3666", "drawsSince": 3008, "lastSeen": "Feb 14, 2022"}, {"combo": "3444", "drawsSince": 2912, "lastSeen": "Apr 3, 2022"}, {"combo": "0047", "drawsSince": 2911, "lastSeen": "Apr 4, 2022"}, {"combo": "1555", "drawsSince": 2791, "lastSeen": "Jun 3, 2022"}, {"combo": "0118", "drawsSince": 2739, "lastSeen": "Jun 29, 2022"}, {"combo": "4999", "drawsSince": 2738, "lastSeen": "Jun 29, 2022"}, {"combo": "0558", "drawsSince": 2689, "lastSeen": "Jul 24, 2022"}, {"combo": "3488", "drawsSince": 2564, "lastSeen": "Sep 24, 2022"}, {"combo": "7789", "drawsSince": 2553, "lastSeen": "Sep 30, 2022"}, {"combo": "2338", "drawsSince": 2529, "lastSeen": "Oct 12, 2022"}, {"combo": "0058", "drawsSince": 2523, "lastSeen": "Oct 15, 2022"}, {"combo": "1337", "drawsSince": 2492, "lastSeen": "Oct 30, 2022"}, {"combo": "0014", "drawsSince": 2464, "lastSeen": "Nov 13, 2022"}, {"combo": "0225", "drawsSince": 2462, "lastSeen": "Nov 14, 2022"}, {"combo": "5588", "drawsSince": 2461, "lastSeen": "Nov 15, 2022"}, {"combo": "2268", "drawsSince": 2437, "lastSeen": "Nov 27, 2022"}, {"combo": "0677", "drawsSince": 2428, "lastSeen": "Dec 1, 2022"}, {"combo": "1134", "drawsSince": 2416, "lastSeen": "Dec 7, 2022"}, {"combo": "0088", "drawsSince": 2414, "lastSeen": "Dec 8, 2022"}, {"combo": "0144", "drawsSince": 2373, "lastSeen": "Dec 29, 2022"}]);
+    seedP4Inspector("LA|Pick 4",["0000", "0002", "0004", "0007", "0008", "0022", "0027", "0048", "0066", "0158", "0177", "0222", "0233", "0333", "0335", "0444", "0558", "0566", "1111", "1112", "1113", "1114", "1115", "1116", "1117", "1119", "1122", "1126", "1144", "1188", "1222", "1244", "1266", "1333", "1336", "1444", "1555", "1588", "1777", "1888", "2222", "2233", "2234", "2255", "2288", "2338", "2355", "2444", "2488", "2888", "3333", "3335", "3337", "3344", "3358", "3369", "3555", "3777", "3999", "4444", "4499", "4677", "4777", "4888", "4999", "5555", "5556", "5666", "5889", "6666", "6669", "6699", "6777", "6788", "6999", "7777", "7778", "8888"],[{"combo": "2279", "drawsSince": 2540, "lastSeen": "Mar 31, 2019"}, {"combo": "3339", "drawsSince": 2533, "lastSeen": "Apr 7, 2019"}, {"combo": "4446", "drawsSince": 2513, "lastSeen": "Apr 28, 2019"}, {"combo": "3799", "drawsSince": 2495, "lastSeen": "May 16, 2019"}, {"combo": "0034", "drawsSince": 2491, "lastSeen": "May 20, 2019"}, {"combo": "2277", "drawsSince": 2479, "lastSeen": "Jun 1, 2019"}, {"combo": "4555", "drawsSince": 2449, "lastSeen": "Jul 1, 2019"}, {"combo": "2666", "drawsSince": 2417, "lastSeen": "Aug 2, 2019"}, {"combo": "0144", "drawsSince": 2392, "lastSeen": "Aug 27, 2019"}, {"combo": "3355", "drawsSince": 2391, "lastSeen": "Aug 28, 2019"}, {"combo": "7788", "drawsSince": 2389, "lastSeen": "Aug 30, 2019"}, {"combo": "0778", "drawsSince": 2388, "lastSeen": "Aug 31, 2019"}, {"combo": "5577", "drawsSince": 2352, "lastSeen": "Oct 6, 2019"}, {"combo": "2599", "drawsSince": 2284, "lastSeen": "Dec 13, 2019"}, {"combo": "4455", "drawsSince": 2271, "lastSeen": "Dec 27, 2019"}, {"combo": "1259", "drawsSince": 2267, "lastSeen": "Dec 31, 2019"}, {"combo": "2588", "drawsSince": 2263, "lastSeen": "Jan 4, 2020"}, {"combo": "6689", "drawsSince": 2247, "lastSeen": "Jan 20, 2020"}, {"combo": "2446", "drawsSince": 2229, "lastSeen": "Feb 7, 2020"}, {"combo": "1145", "drawsSince": 2201, "lastSeen": "Mar 6, 2020"}, {"combo": "2337", "drawsSince": 2169, "lastSeen": "Apr 7, 2020"}, {"combo": "1245", "drawsSince": 2142, "lastSeen": "May 5, 2020"}, {"combo": "0038", "drawsSince": 2131, "lastSeen": "May 16, 2020"}, {"combo": "1147", "drawsSince": 2130, "lastSeen": "May 17, 2020"}, {"combo": "0047", "drawsSince": 2125, "lastSeen": "May 22, 2020"}, {"combo": "1699", "drawsSince": 2097, "lastSeen": "Jun 19, 2020"}, {"combo": "3455", "drawsSince": 2081, "lastSeen": "Jul 5, 2020"}, {"combo": "4478", "drawsSince": 2027, "lastSeen": "Aug 28, 2020"}, {"combo": "3888", "drawsSince": 2007, "lastSeen": "Sep 17, 2020"}, {"combo": "1566", "drawsSince": 2006, "lastSeen": "Sep 18, 2020"}, {"combo": "0448", "drawsSince": 1999, "lastSeen": "Sep 25, 2020"}, {"combo": "1129", "drawsSince": 1981, "lastSeen": "Oct 13, 2020"}, {"combo": "0056", "drawsSince": 1977, "lastSeen": "Oct 17, 2020"}, {"combo": "0677", "drawsSince": 1967, "lastSeen": "Oct 27, 2020"}, {"combo": "3556", "drawsSince": 1964, "lastSeen": "Oct 30, 2020"}, {"combo": "6668", "drawsSince": 1954, "lastSeen": "Nov 9, 2020"}, {"combo": "0445", "drawsSince": 1941, "lastSeen": "Nov 22, 2020"}, {"combo": "2236", "drawsSince": 1938, "lastSeen": "Nov 25, 2020"}, {"combo": "0399", "drawsSince": 1935, "lastSeen": "Nov 28, 2020"}, {"combo": "2777", "drawsSince": 1920, "lastSeen": "Dec 13, 2020"}, {"combo": "2228", "drawsSince": 1876, "lastSeen": "Jan 27, 2021"}, {"combo": "2267", "drawsSince": 1867, "lastSeen": "Feb 5, 2021"}, {"combo": "3779", "drawsSince": 1848, "lastSeen": "Feb 24, 2021"}, {"combo": "1377", "drawsSince": 1842, "lastSeen": "Mar 2, 2021"}, {"combo": "1135", "drawsSince": 1841, "lastSeen": "Mar 3, 2021"}, {"combo": "8889", "drawsSince": 1822, "lastSeen": "Mar 22, 2021"}, {"combo": "2223", "drawsSince": 1802, "lastSeen": "Apr 12, 2021"}, {"combo": "1577", "drawsSince": 1791, "lastSeen": "Apr 23, 2021"}, {"combo": "4445", "drawsSince": 1788, "lastSeen": "Apr 26, 2021"}, {"combo": "4899", "drawsSince": 1786, "lastSeen": "Apr 28, 2021"}]);
+    seedP4Inspector("GA|Pick 4",["1112", "2222", "4444", "4555", "7777"],[{"combo": "3335", "drawsSince": 7155, "lastSeen": "Sep 17, 2019"}, {"combo": "6666", "drawsSince": 7079, "lastSeen": "Oct 13, 2019"}, {"combo": "0888", "drawsSince": 7026, "lastSeen": "Oct 30, 2019"}, {"combo": "8888", "drawsSince": 6724, "lastSeen": "Feb 8, 2020"}, {"combo": "6669", "drawsSince": 6686, "lastSeen": "Feb 21, 2020"}, {"combo": "6667", "drawsSince": 6607, "lastSeen": "Mar 18, 2020"}, {"combo": "0001", "drawsSince": 6509, "lastSeen": "Apr 20, 2020"}, {"combo": "5558", "drawsSince": 6203, "lastSeen": "Jul 31, 2020"}, {"combo": "0000", "drawsSince": 6108, "lastSeen": "Aug 31, 2020"}, {"combo": "3888", "drawsSince": 6057, "lastSeen": "Sep 17, 2020"}, {"combo": "2229", "drawsSince": 5867, "lastSeen": "Nov 20, 2020"}, {"combo": "4668", "drawsSince": 5548, "lastSeen": "Mar 6, 2021"}, {"combo": "3333", "drawsSince": 5528, "lastSeen": "Mar 13, 2021"}, {"combo": "7779", "drawsSince": 5306, "lastSeen": "May 26, 2021"}, {"combo": "1147", "drawsSince": 4879, "lastSeen": "Oct 15, 2021"}, {"combo": "5566", "drawsSince": 4747, "lastSeen": "Nov 28, 2021"}, {"combo": "4449", "drawsSince": 4509, "lastSeen": "Feb 15, 2022"}, {"combo": "6777", "drawsSince": 4348, "lastSeen": "Apr 10, 2022"}, {"combo": "2777", "drawsSince": 4328, "lastSeen": "Apr 17, 2022"}, {"combo": "3337", "drawsSince": 4206, "lastSeen": "May 27, 2022"}, {"combo": "1444", "drawsSince": 4090, "lastSeen": "Jul 5, 2022"}, {"combo": "1111", "drawsSince": 4064, "lastSeen": "Jul 14, 2022"}, {"combo": "2266", "drawsSince": 3969, "lastSeen": "Aug 14, 2022"}, {"combo": "1119", "drawsSince": 3949, "lastSeen": "Aug 21, 2022"}, {"combo": "2238", "drawsSince": 3840, "lastSeen": "Sep 26, 2022"}, {"combo": "0044", "drawsSince": 3836, "lastSeen": "Sep 28, 2022"}, {"combo": "1166", "drawsSince": 3746, "lastSeen": "Oct 28, 2022"}, {"combo": "0027", "drawsSince": 3729, "lastSeen": "Nov 2, 2022"}, {"combo": "0266", "drawsSince": 3720, "lastSeen": "Nov 5, 2022"}, {"combo": "1555", "drawsSince": 3692, "lastSeen": "Nov 15, 2022"}, {"combo": "2466", "drawsSince": 3644, "lastSeen": "Dec 1, 2022"}, {"combo": "3355", "drawsSince": 3431, "lastSeen": "Feb 10, 2023"}, {"combo": "3666", "drawsSince": 3319, "lastSeen": "Mar 19, 2023"}, {"combo": "4888", "drawsSince": 3296, "lastSeen": "Mar 27, 2023"}, {"combo": "0005", "drawsSince": 3249, "lastSeen": "Apr 11, 2023"}, {"combo": "2269", "drawsSince": 3229, "lastSeen": "Apr 18, 2023"}, {"combo": "2666", "drawsSince": 3192, "lastSeen": "Apr 30, 2023"}, {"combo": "1113", "drawsSince": 3170, "lastSeen": "May 8, 2023"}, {"combo": "3999", "drawsSince": 3080, "lastSeen": "Jun 7, 2023"}, {"combo": "3799", "drawsSince": 3054, "lastSeen": "Jun 15, 2023"}, {"combo": "2233", "drawsSince": 3047, "lastSeen": "Jun 18, 2023"}, {"combo": "0488", "drawsSince": 3038, "lastSeen": "Jun 21, 2023"}, {"combo": "2333", "drawsSince": 3030, "lastSeen": "Jun 23, 2023"}, {"combo": "0337", "drawsSince": 2992, "lastSeen": "Jul 6, 2023"}, {"combo": "2888", "drawsSince": 2991, "lastSeen": "Jul 6, 2023"}, {"combo": "0289", "drawsSince": 2950, "lastSeen": "Jul 20, 2023"}, {"combo": "6679", "drawsSince": 2946, "lastSeen": "Jul 21, 2023"}, {"combo": "2337", "drawsSince": 2917, "lastSeen": "Jul 31, 2023"}, {"combo": "1339", "drawsSince": 2910, "lastSeen": "Aug 2, 2023"}, {"combo": "2288", "drawsSince": 2864, "lastSeen": "Aug 18, 2023"}]);
+    seedP4Inspector("FL|Pick 4",["0009", "1111", "1444", "2255", "2277", "2666", "3888", "3999", "5999", "6669", "7777", "7999"],[{"combo": "2266", "drawsSince": 5022, "lastSeen": "May 14, 2019"}, {"combo": "5888", "drawsSince": 4940, "lastSeen": "Jun 24, 2019"}, {"combo": "3444", "drawsSince": 4903, "lastSeen": "Jul 13, 2019"}, {"combo": "2888", "drawsSince": 4854, "lastSeen": "Aug 6, 2019"}, {"combo": "2777", "drawsSince": 4605, "lastSeen": "Dec 9, 2019"}, {"combo": "5557", "drawsSince": 4508, "lastSeen": "Jan 26, 2020"}, {"combo": "4477", "drawsSince": 4430, "lastSeen": "Mar 5, 2020"}, {"combo": "3777", "drawsSince": 4287, "lastSeen": "May 16, 2020"}, {"combo": "1777", "drawsSince": 4267, "lastSeen": "May 26, 2020"}, {"combo": "6677", "drawsSince": 4038, "lastSeen": "Sep 17, 2020"}, {"combo": "2222", "drawsSince": 4017, "lastSeen": "Sep 28, 2020"}, {"combo": "9999", "drawsSince": 3957, "lastSeen": "Oct 28, 2020"}, {"combo": "5577", "drawsSince": 3851, "lastSeen": "Dec 20, 2020"}, {"combo": "7799", "drawsSince": 3841, "lastSeen": "Dec 25, 2020"}, {"combo": "1112", "drawsSince": 3737, "lastSeen": "Feb 15, 2021"}, {"combo": "4447", "drawsSince": 3692, "lastSeen": "Mar 9, 2021"}, {"combo": "5677", "drawsSince": 3624, "lastSeen": "Apr 12, 2021"}, {"combo": "3555", "drawsSince": 3597, "lastSeen": "Apr 26, 2021"}, {"combo": "4488", "drawsSince": 3588, "lastSeen": "Apr 30, 2021"}, {"combo": "2778", "drawsSince": 3562, "lastSeen": "May 13, 2021"}, {"combo": "3335", "drawsSince": 3561, "lastSeen": "May 14, 2021"}, {"combo": "0008", "drawsSince": 3414, "lastSeen": "Jul 26, 2021"}, {"combo": "8888", "drawsSince": 3407, "lastSeen": "Jul 30, 2021"}, {"combo": "2344", "drawsSince": 3380, "lastSeen": "Aug 12, 2021"}, {"combo": "1255", "drawsSince": 3333, "lastSeen": "Sep 5, 2021"}, {"combo": "5788", "drawsSince": 3269, "lastSeen": "Oct 7, 2021"}, {"combo": "2223", "drawsSince": 3251, "lastSeen": "Oct 16, 2021"}, {"combo": "0699", "drawsSince": 3232, "lastSeen": "Oct 25, 2021"}, {"combo": "1114", "drawsSince": 3225, "lastSeen": "Oct 29, 2021"}, {"combo": "1168", "drawsSince": 3222, "lastSeen": "Oct 30, 2021"}, {"combo": "2224", "drawsSince": 3202, "lastSeen": "Nov 9, 2021"}, {"combo": "0048", "drawsSince": 3082, "lastSeen": "Jan 8, 2022"}, {"combo": "0088", "drawsSince": 3077, "lastSeen": "Jan 11, 2022"}, {"combo": "0055", "drawsSince": 2990, "lastSeen": "Feb 23, 2022"}, {"combo": "1499", "drawsSince": 2962, "lastSeen": "Mar 9, 2022"}, {"combo": "8889", "drawsSince": 2945, "lastSeen": "Mar 18, 2022"}, {"combo": "3338", "drawsSince": 2934, "lastSeen": "Mar 23, 2022"}, {"combo": "0003", "drawsSince": 2875, "lastSeen": "Apr 22, 2022"}, {"combo": "4888", "drawsSince": 2853, "lastSeen": "May 3, 2022"}, {"combo": "0002", "drawsSince": 2762, "lastSeen": "Jun 17, 2022"}, {"combo": "0058", "drawsSince": 2651, "lastSeen": "Aug 12, 2022"}, {"combo": "1999", "drawsSince": 2648, "lastSeen": "Aug 13, 2022"}, {"combo": "5666", "drawsSince": 2645, "lastSeen": "Aug 15, 2022"}, {"combo": "0066", "drawsSince": 2630, "lastSeen": "Aug 22, 2022"}, {"combo": "4788", "drawsSince": 2606, "lastSeen": "Sep 3, 2022"}, {"combo": "1359", "drawsSince": 2602, "lastSeen": "Sep 5, 2022"}, {"combo": "3339", "drawsSince": 2575, "lastSeen": "Sep 19, 2022"}, {"combo": "4444", "drawsSince": 2559, "lastSeen": "Sep 27, 2022"}, {"combo": "3399", "drawsSince": 2518, "lastSeen": "Oct 17, 2022"}, {"combo": "1228", "drawsSince": 2513, "lastSeen": "Oct 20, 2022"}]);
+    seedP4Inspector("DE|Pick 4",["0003", "0009", "0022", "0044", "0113", "0222", "1116", "1144", "1555", "2222", "2228", "2255", "2888", "2999", "4448", "5555", "5556", "5666", "6666", "6677", "7777", "7999", "9999"],[{"combo": "5999", "drawsSince": 4606, "lastSeen": "Aug 15, 2019"}, {"combo": "7779", "drawsSince": 4566, "lastSeen": "Sep 5, 2019"}, {"combo": "2233", "drawsSince": 4397, "lastSeen": "Dec 5, 2019"}, {"combo": "1334", "drawsSince": 4336, "lastSeen": "Jan 8, 2020"}, {"combo": "0005", "drawsSince": 3915, "lastSeen": "Aug 22, 2020"}, {"combo": "3338", "drawsSince": 3874, "lastSeen": "Sep 13, 2020"}, {"combo": "0333", "drawsSince": 3868, "lastSeen": "Sep 16, 2020"}, {"combo": "0566", "drawsSince": 3699, "lastSeen": "Dec 16, 2020"}, {"combo": "3335", "drawsSince": 3619, "lastSeen": "Jan 29, 2021"}, {"combo": "4446", "drawsSince": 3549, "lastSeen": "Mar 8, 2021"}, {"combo": "5788", "drawsSince": 3487, "lastSeen": "Apr 10, 2021"}, {"combo": "4699", "drawsSince": 3483, "lastSeen": "Apr 13, 2021"}, {"combo": "0555", "drawsSince": 3404, "lastSeen": "May 25, 2021"}, {"combo": "2477", "drawsSince": 3389, "lastSeen": "Jun 2, 2021"}, {"combo": "4488", "drawsSince": 3380, "lastSeen": "Jun 7, 2021"}, {"combo": "2488", "drawsSince": 3362, "lastSeen": "Jun 17, 2021"}, {"combo": "3566", "drawsSince": 3095, "lastSeen": "Nov 8, 2021"}, {"combo": "1117", "drawsSince": 3030, "lastSeen": "Dec 13, 2021"}, {"combo": "3466", "drawsSince": 2982, "lastSeen": "Jan 8, 2022"}, {"combo": "2224", "drawsSince": 2972, "lastSeen": "Jan 14, 2022"}, {"combo": "1268", "drawsSince": 2944, "lastSeen": "Jan 29, 2022"}, {"combo": "2558", "drawsSince": 2860, "lastSeen": "Mar 15, 2022"}, {"combo": "5699", "drawsSince": 2804, "lastSeen": "Apr 14, 2022"}, {"combo": "3388", "drawsSince": 2757, "lastSeen": "May 10, 2022"}, {"combo": "2299", "drawsSince": 2734, "lastSeen": "May 22, 2022"}, {"combo": "2277", "drawsSince": 2705, "lastSeen": "Jun 7, 2022"}, {"combo": "3336", "drawsSince": 2693, "lastSeen": "Jun 13, 2022"}, {"combo": "0013", "drawsSince": 2686, "lastSeen": "Jun 17, 2022"}, {"combo": "2333", "drawsSince": 2642, "lastSeen": "Jul 11, 2022"}, {"combo": "5777", "drawsSince": 2634, "lastSeen": "Jul 15, 2022"}, {"combo": "0049", "drawsSince": 2616, "lastSeen": "Jul 25, 2022"}, {"combo": "0055", "drawsSince": 2535, "lastSeen": "Sep 6, 2022"}, {"combo": "1355", "drawsSince": 2515, "lastSeen": "Sep 17, 2022"}, {"combo": "7778", "drawsSince": 2498, "lastSeen": "Sep 26, 2022"}, {"combo": "5566", "drawsSince": 2493, "lastSeen": "Sep 29, 2022"}, {"combo": "1444", "drawsSince": 2485, "lastSeen": "Oct 3, 2022"}, {"combo": "1333", "drawsSince": 2454, "lastSeen": "Oct 20, 2022"}, {"combo": "0777", "drawsSince": 2420, "lastSeen": "Nov 7, 2022"}, {"combo": "0299", "drawsSince": 2419, "lastSeen": "Nov 8, 2022"}, {"combo": "4445", "drawsSince": 2409, "lastSeen": "Nov 13, 2022"}, {"combo": "1577", "drawsSince": 2404, "lastSeen": "Nov 16, 2022"}, {"combo": "0699", "drawsSince": 2373, "lastSeen": "Dec 2, 2022"}, {"combo": "0008", "drawsSince": 2336, "lastSeen": "Dec 22, 2022"}, {"combo": "2268", "drawsSince": 2279, "lastSeen": "Jan 23, 2023"}, {"combo": "1477", "drawsSince": 2238, "lastSeen": "Feb 14, 2023"}, {"combo": "6779", "drawsSince": 2229, "lastSeen": "Feb 18, 2023"}, {"combo": "3999", "drawsSince": 2218, "lastSeen": "Feb 24, 2023"}, {"combo": "6999", "drawsSince": 2209, "lastSeen": "Mar 1, 2023"}, {"combo": "1288", "drawsSince": 2180, "lastSeen": "Mar 17, 2023"}, {"combo": "3334", "drawsSince": 2144, "lastSeen": "Apr 5, 2023"}]);
+    saveDB();
+    console.log("LottoIQ: Pick 4 combo data seeded for all states");
+  }catch(e){console.warn("seedAllP4Combos failed:",e);}
+}
+
 function seedAllStates(){
   try{
     const db=sget();
@@ -3237,6 +3422,7 @@ try {
   console.log("LottoIQ: starting load...");
   loadDB();
   autoCheckResults(); // WOL auto-score past predictions against draw history
+  seedAllP4Combos(); // Pick 4 combo overdue data
   console.log("LottoIQ: loadDB done, seeding TX...");
   seedTXData();
   console.log("LottoIQ: TX seeded, seeding all states...");
