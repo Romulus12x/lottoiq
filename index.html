@@ -202,127 +202,234 @@ function analyze(drawings,game){
   const rfs=Object.entries(rfr).sort((a,b)=>b[1]-a[1]);
   const rhot=rfs.slice(0,5).map(e=>e[0]);
   const rcold=rfs.slice(-5).map(e=>e[0]);
-  return{fr,rfr,pos,posTop,due,hot,cold,rhot,rcold,topP:Object.entries(pf).sort((a,b)=>b[1]-a[1]).slice(0,10),topC:Object.entries(cf).sort((a,b)=>b[1]-a[1]).slice(0,10),topFP:Object.entries(fp).sort((a,b)=>b[1]-a[1]).slice(0,10),topBP:Object.entries(bp).sort((a,b)=>b[1]-a[1]).slice(0,10),topMP:Object.entries(mp).sort((a,b)=>b[1]-a[1]).slice(0,10),hl,eo,sc,rc,sl,tc,topHL:Object.entries(hl).sort((a,b)=>b[1]-a[1]),topEO:Object.entries(eo).sort((a,b)=>b[1]-a[1]),topS:Object.entries(sc).sort((a,b)=>b[1]-a[1]),topR:Object.entries(rc).sort((a,b)=>b[1]-a[1]),topSL:Object.entries(sl).sort((a,b)=>b[1]-a[1]),total:drawings.length,lastDraw};
+  return{fr,rfr,drawings,pos,posTop,due,hot,cold,rhot,rcold,topP:Object.entries(pf).sort((a,b)=>b[1]-a[1]).slice(0,10),topC:Object.entries(cf).sort((a,b)=>b[1]-a[1]).slice(0,10),topFP:Object.entries(fp).sort((a,b)=>b[1]-a[1]).slice(0,10),topBP:Object.entries(bp).sort((a,b)=>b[1]-a[1]).slice(0,10),topMP:Object.entries(mp).sort((a,b)=>b[1]-a[1]).slice(0,10),hl,eo,sc,rc,sl,tc,topHL:Object.entries(hl).sort((a,b)=>b[1]-a[1]),topEO:Object.entries(eo).sort((a,b)=>b[1]-a[1]),topS:Object.entries(sc).sort((a,b)=>b[1]-a[1]),topR:Object.entries(rc).sort((a,b)=>b[1]-a[1]),topSL:Object.entries(sl).sort((a,b)=>b[1]-a[1]),total:drawings.length,lastDraw};
 }
 
 function predict(an,game,ins){
   const dg=DIGITS[game];
   const{fr,due,hot,total,hl,eo,sc,rc,tc}=an;
   if(total<5)return[];
-  // WOL Phase 2 + Recency: blend historical freq with recency-weighted freq
+
+  // ── WOL Step 1: Seed from previous draw ──────────────────────────────────
   const lastDrawNums=an.lastDraw?an.lastDraw.map(String):[];
+  const prev2Nums=an.drawings&&an.drawings[1]?an.drawings[1].numbers.map(String):[];
   const mirrorOfLast=lastDrawNums.map(d=>String((parseInt(d)+5)%10));
+
+  // ── WOL Trigger check: are any mirror pairs active? ───────────────────────
+  // Mirror pairs: 0↔5, 1↔6, 2↔7, 3↔8, 4↔9
+  const mirrorPairs=[[0,5],[1,6],[2,7],[3,8],[4,9]];
+  const activeTriggers=mirrorPairs.filter(([a,b])=>
+    lastDrawNums.includes(String(a))&&lastDrawNums.includes(String(b))
+  );
+  const triggerActive=activeTriggers.length>0; // both sides of a pair in last draw
+
+  // ── Day-of-week signal (WOL: Tue/Thu/Sat favor doubles) ──────────────────
+  const dow=new Date().getDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+  const doubleDay=dow===2||dow===4||dow===6; // Tue, Thu, Sat
+
+  // ── WOL Step 2: Three-tier Hot Box scoring ────────────────────────────────
+  // Red Box (Super Hot) = top 3 digits by combined score
+  // Green Box (Hot) = next 4 digits
+  // Black Box (Warm) = remaining 3 digits
   const rfr=an.rfr||{};
   const maxRfr=Math.max(...Object.values(rfr).concat([1]));
+  const maxFr=Math.max(...Object.values(fr).concat([1]));
+
+  // Base scores before tier assignment
+  const baseScores={};
+  for(let i=0;i<=9;i++){
+    const n=String(i);
+    const isLast=lastDrawNums.includes(n);
+    const isMirror=!isLast&&mirrorOfLast.includes(n);
+    const isCarryover=isLast&&prev2Nums.includes(n);
+
+    const histScore=(fr[n]||0)/maxFr*25;
+    const recScore=(rfr[n]||0)/maxRfr*35;
+    const carryScore=isCarryover?30:isLast?22:isMirror?12:0;
+    const di=due.findIndex(d=>d.n===n);
+    const dueScore=di===0?8:di===1?5:di===2?3:0;
+    const hotScore=hot.includes(n)?5:0;
+    baseScores[n]=histScore+recScore+carryScore+dueScore+hotScore;
+  }
+
+  // Assign WOL tiers
+  const sorted10=Object.entries(baseScores).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+  const redBox=sorted10.slice(0,3);   // Super Hot Box
+  const greenBox=sorted10.slice(3,7); // Hot Box
+  const blackBox=sorted10.slice(7);   // Warm Box
+
+  // WOL color multipliers: Red numbers first, Green second, Black last
+  // Inside each box: Red digits (top of that box) score highest
   const scores={};
   for(let i=0;i<=9;i++){
     const n=String(i);
-    const histScore=(fr[n]||0)/total*40;           // historical frequency (40%)
-    const recScore=(rfr[n]||0)/maxRfr*40;          // recency-weighted frequency (40%)
-    const hb=hot.includes(n)?8:0;                  // hot bonus
-    const di=due.findIndex(d=>d.n===n),db=di<3?(3-di)*8:0; // due bonus
-    const carryBonus=lastDrawNums.includes(n)?20:0; // WOL carryover
-    const mirrorBonus=mirrorOfLast.includes(n)&&!lastDrawNums.includes(n)?10:0;
-    scores[n]=histScore+recScore+hb+db+carryBonus+mirrorBonus;
+    let tierMult=1.0;
+    if(redBox.includes(n)){
+      // Red box: red digits(1st) get 1.4x, green(2nd) 1.2x, black(3rd) 1.0x
+      const pos=redBox.indexOf(n);
+      tierMult=pos===0?1.4:pos===1?1.2:1.0;
+    } else if(greenBox.includes(n)){
+      // Green box: red digits get 1.1x, rest 0.9x
+      const pos=greenBox.indexOf(n);
+      tierMult=pos===0?1.1:0.9;
+    } else {
+      tierMult=0.75; // Black/warm box — lower priority
+    }
+    scores[n]=baseScores[n]*tierMult;
   }
+
+  // Inspector boosts
   if(ins){
-    if(ins.keyNumbers)Object.entries(ins.keyNumbers).forEach(e=>{if(scores[e[0]]!==undefined)scores[e[0]]+=(e[1]/100)*20});
-    if(ins.topPairs)ins.topPairs.slice(0,10).forEach(e=>e[0].split("-").forEach(n=>{if(scores[n]!==undefined)scores[n]+=5}));
+    if(ins.keyNumbers)Object.entries(ins.keyNumbers).forEach(e=>{
+      if(scores[e[0]]!==undefined)scores[e[0]]+=(e[1]/100)*15;
+    });
+    if(ins.topPairs)ins.topPairs.slice(0,10).forEach(e=>
+      e[0].split("-").forEach(n=>{if(scores[n]!==undefined)scores[n]+=4;})
+    );
   }
+
   const mp=Math.max(...Object.values(scores));
+
+  // ── WOL Step 3: Dominant play type with day-of-week override ─────────────
   const dHL=Object.entries(hl).sort((a,b)=>b[1]-a[1])[0];
   const dEO=Object.entries(eo).sort((a,b)=>b[1]-a[1])[0];
-  const dT=Object.entries(tc).sort((a,b)=>b[1]-a[1])[0];
   const hs=Object.entries(sc).sort((a,b)=>b[1]-a[1]).slice(0,5).map(e=>parseInt(e[0]));
   const hr=Object.entries(rc).sort((a,b)=>b[1]-a[1]).slice(0,3).map(e=>parseInt(e[0]));
   const iHL=ins&&ins.dominantHL?ins.dominantHL:(dHL?dHL[0]:null);
   const iEO=ins&&ins.dominantEO?ins.dominantEO:(dEO?dEO[0]:null);
-  const iT=ins&&ins.dominantType?ins.dominantType:(dT?dT[0]:null);
   const iS=ins&&ins.hotSums&&ins.hotSums.length?ins.hotSums:hs;
   const iR=ins&&ins.hotRoots&&ins.hotRoots.length?ins.hotRoots:hr;
-  function pb(pick){let s=0;if(iHL&&ghl(pick)===iHL)s+=20;if(iEO&&geo(pick)===iEO)s+=20;if(iS.includes(gsum(pick)))s+=15;if(iR.includes(grs(pick)))s+=10;if(iT&&gct(pick)===iT)s+=15;return s}
-  // Determine dominant structure type from recent 20 draws
-  const recentDraws=an.total>0?(function(){
-    // We don't have raw drawings here, use tc counts as proxy
-    return null;
-  })():null;
-  // Get dominant structure from tc
-  const dominantStruct=iT||Object.entries(an.tc||{}).sort((a,b)=>b[1]-a[1]).map(e=>e[0])[0]||"single";
 
+  // Structure type: WOL says use triggers + day-of-week to pick type
+  // Pick 5: bias toward doubles (they cover ~50% of all combos per WOL math)
+  // Pick 4/3: use dominant historical type, boosted by trigger/day signals
+  const histDomType=Object.entries(tc||{}).sort((a,b)=>b[1]-a[1]).map(e=>e[0])[0]||"single";
+  const insDomType=ins&&ins.dominantType?ins.dominantType:null;
+
+  let dominantStruct=insDomType||histDomType;
+
+  // WOL trigger override: if mirror pair trigger active, force double structure
+  if(triggerActive){
+    if(dg===3)dominantStruct="double";
+    else if(dg===4)dominantStruct="AABC"; // one pair + two different
+    else if(dg===5)dominantStruct="AABCD"; // one pair + three different
+  }
+  // Day-of-week override: Tue/Thu/Sat favor doubles
+  if(doubleDay&&!triggerActive){
+    if(dg===3&&dominantStruct==="single")dominantStruct="double";
+    else if(dg===4&&dominantStruct==="ABCD")dominantStruct="AABC";
+    else if(dg===5&&dominantStruct==="ABCDE")dominantStruct="AABCD";
+  }
+  // Pick 5 math bias: if no strong signal, prefer AABCD (doubles cover 50%)
+  if(dg===5&&!triggerActive&&!doubleDay&&dominantStruct==="ABCDE"){
+    const singleCount=tc["ABCDE"]||0;
+    const doubleCount=tc["AABCD"]||0;
+    if(doubleCount>0||singleCount===0)dominantStruct="AABCD";
+  }
+
+  // pb() — pattern bonus for a given pick
+  const iT=dominantStruct;
+  function pb(pick){
+    let s=0;
+    if(iHL&&ghl(pick)===iHL)s+=20;
+    if(iEO&&geo(pick)===iEO)s+=20;
+    if(iS.includes(gsum(pick)))s+=15;
+    if(iR.includes(grs(pick)))s+=10;
+    if(iT&&gct(pick)===iT)s+=15;
+    // WOL: bonus if pick uses red box digits
+    const redCount=pick.filter(n=>redBox.includes(n)).length;
+    s+=redCount*5; // +5 per red box digit in pick
+    // WOL: bonus if pick contains carryover digit
+    const carryCount=pick.filter(n=>lastDrawNums.includes(n)).length;
+    s+=carryCount*4;
+    return s;
+  }
+
+  // ── WOL Step 4-6: Generate structured picks using Hot Box priority ─────────
   function makeStructuredPick(targetType,scoreMap,dg){
-    // Generate a pick that matches the target structure type
     const sorted=Object.entries(scoreMap).sort((a,b)=>b[1]-a[1]).map(e=>e[0]);
+    // Prefer red box digits first within sorted order
+    const sortedWOL=[
+      ...sorted.filter(n=>redBox.includes(n)),
+      ...sorted.filter(n=>greenBox.includes(n)),
+      ...sorted.filter(n=>blackBox.includes(n))
+    ];
     const pick=[];
     if(dg===3){
       if(targetType==="double"){
-        // AAB: pick one digit twice, one different
-        const d1=sorted[0];
-        const d2=sorted.find(x=>x!==d1)||sorted[1];
+        const d1=sortedWOL[0];
+        const d2=sortedWOL.find(x=>x!==d1)||sortedWOL[1];
         const pos=[0,1,2];pos.sort(()=>Math.random()-0.5);
         pick[pos[0]]=d1;pick[pos[1]]=d1;pick[pos[2]]=d2;
       } else if(targetType==="triple"){
-        pick.push(sorted[0],sorted[0],sorted[0]);
+        pick.push(sortedWOL[0],sortedWOL[0],sortedWOL[0]);
       } else {
-        // single ABC
-        for(let p=0;p<3;p++){const pool=sorted.filter(x=>!pick.includes(x));pick.push((pool[0]||sorted[p%sorted.length]));}
+        for(let p=0;p<3;p++){const pool=sortedWOL.filter(x=>!pick.includes(x));pick.push(pool[0]||sortedWOL[p%sortedWOL.length]);}
       }
     } else if(dg===4){
       if(targetType==="AABB"){
-        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1];
-        const arr=[d1,d1,d2,d2];arr.sort(()=>Math.random()-0.5);
-        arr.forEach(x=>pick.push(x));
+        const d1=sortedWOL[0],d2=sortedWOL.find(x=>x!==d1)||sortedWOL[1];
+        [d1,d1,d2,d2].sort(()=>Math.random()-0.5).forEach(x=>pick.push(x));
       } else if(targetType==="AABC"){
-        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1],d3=sorted.find(x=>x!==d1&&x!==d2)||sorted[2];
-        const arr=[d1,d1,d2,d3];arr.sort(()=>Math.random()-0.5);
-        arr.forEach(x=>pick.push(x));
+        const d1=sortedWOL[0],d2=sortedWOL.find(x=>x!==d1)||sortedWOL[1],d3=sortedWOL.find(x=>x!==d1&&x!==d2)||sortedWOL[2];
+        [d1,d1,d2,d3].sort(()=>Math.random()-0.5).forEach(x=>pick.push(x));
       } else if(targetType==="AAAB"){
-        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1];
-        const arr=[d1,d1,d1,d2];arr.sort(()=>Math.random()-0.5);
-        arr.forEach(x=>pick.push(x));
+        const d1=sortedWOL[0],d2=sortedWOL.find(x=>x!==d1)||sortedWOL[1];
+        [d1,d1,d1,d2].sort(()=>Math.random()-0.5).forEach(x=>pick.push(x));
       } else {
-        // ABCD default
-        for(let p=0;p<4;p++){const pool=sorted.filter(x=>!pick.includes(x));pick.push(pool[0]||sorted[p%sorted.length]);}
+        // ABCD
+        for(let p=0;p<4;p++){const pool=sortedWOL.filter(x=>!pick.includes(x));pick.push(pool[0]||sortedWOL[p%sortedWOL.length]);}
       }
     } else if(dg===5){
       if(targetType==="AABCD"){
-        const d1=sorted[0],rest=sorted.filter(x=>x!==d1).slice(0,3);
-        const arr=[d1,d1,...rest];arr.sort(()=>Math.random()-0.5);
-        arr.forEach(x=>pick.push(x));
+        const d1=sortedWOL[0],rest=sortedWOL.filter(x=>x!==d1).slice(0,3);
+        [d1,d1,...rest].sort(()=>Math.random()-0.5).forEach(x=>pick.push(x));
       } else if(targetType==="AABBC"){
-        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1],d3=sorted.find(x=>x!==d1&&x!==d2)||sorted[2];
-        const arr=[d1,d1,d2,d2,d3];arr.sort(()=>Math.random()-0.5);
-        arr.forEach(x=>pick.push(x));
+        const d1=sortedWOL[0],d2=sortedWOL.find(x=>x!==d1)||sortedWOL[1],d3=sortedWOL.find(x=>x!==d1&&x!==d2)||sortedWOL[2];
+        [d1,d1,d2,d2,d3].sort(()=>Math.random()-0.5).forEach(x=>pick.push(x));
       } else if(targetType==="AAABC"){
-        const d1=sorted[0],d2=sorted.find(x=>x!==d1)||sorted[1],d3=sorted.find(x=>x!==d1&&x!==d2)||sorted[2];
-        const arr=[d1,d1,d1,d2,d3];arr.sort(()=>Math.random()-0.5);
-        arr.forEach(x=>pick.push(x));
+        const d1=sortedWOL[0],d2=sortedWOL.find(x=>x!==d1)||sortedWOL[1],d3=sortedWOL.find(x=>x!==d1&&x!==d2)||sortedWOL[2];
+        [d1,d1,d1,d2,d3].sort(()=>Math.random()-0.5).forEach(x=>pick.push(x));
       } else {
-        // ABCDE default
-        for(let p=0;p<5;p++){const pool=sorted.filter(x=>!pick.includes(x));pick.push(pool[0]||sorted[p%sorted.length]);}
+        // ABCDE
+        for(let p=0;p<5;p++){const pool=sortedWOL.filter(x=>!pick.includes(x));pick.push(pool[0]||sortedWOL[p%sortedWOL.length]);}
       }
     }
     return pick.length===dg?pick:null;
   }
 
   const picks=[],seen=new Set();
-  // Generate 3 structure-matched picks + 2 open picks
-  const structTargets=[dominantStruct,dominantStruct,"open","open","open"];
+  // WOL: 3 picks matching dominant structure, 2 open for coverage
+  // If trigger active: first pick always uses double structure
+  const structTargets=[dominantStruct,dominantStruct,dominantStruct,"open","open"];
+
   for(let att=0;att<2000&&picks.length<5;att++){
     const useStruct=structTargets[picks.length]!=="open";
-    let pick;
+    let pick=null;
     if(useStruct){
       pick=makeStructuredPick(dominantStruct,scores,dg);
-      if(!pick)pick=[];
     }
     if(!pick||!pick.length){
       pick=[];
-      for(let p=0;p<dg;p++){const pool=Object.entries(scores).sort(()=>Math.random()-0.45);pick.push(pool[0][0]);}
+      for(let p=0;p<dg;p++){
+        const pool=Object.entries(scores).sort(()=>Math.random()-0.45);
+        pick.push(pool[0][0]);
+      }
     }
     if(pick.length!==dg)continue;
     const key=[...pick].sort().join("-");if(seen.has(key))continue;seen.add(key);
     const base=pick.reduce((s,n)=>s+scores[n],0)/dg;
-    const conf=Math.min(99,Math.round((base/mp)*70+pb(pick)));
-    picks.push({numbers:pick,confidence:conf,straight:pick.join(""),box:[...pick].sort().join(""),hl:ghl(pick),eo:geo(pick),type:gct(pick),sum:gsum(pick),rs:grs(pick)});
+    const conf=Math.min(99,Math.round((base/mp)*65+pb(pick)));
+    const redUsed=pick.filter(n=>redBox.includes(n)).length;
+    const carryUsed=pick.filter(n=>lastDrawNums.includes(n)).length;
+    picks.push({
+      numbers:pick,confidence:conf,
+      straight:pick.join(""),box:[...pick].sort().join(""),
+      hl:ghl(pick),eo:geo(pick),type:gct(pick),sum:gsum(pick),rs:grs(pick),
+      redBox:redUsed,carryOver:carryUsed,
+      triggerActive,doubleDay,
+      wolTier:redUsed>=Math.ceil(dg/2)?"🔴 Red":redUsed>0?"🟢 Green":"⚫ Black"
+    });
   }
   return picks.sort((a,b)=>b.confidence-a.confidence).slice(0,5);
 }
@@ -1361,6 +1468,15 @@ function render(){
         h+='</div></div>';
 
         // Carryover note
+        // Trigger alert
+        if(activePairs.some(function(p){var both=prevSet.has(p[0])&&prevSet.has(p[1]);return both;})){
+          h+='<div style="background:#1a0800;border:1px solid #f97316;border-radius:6px;padding:8px 12px;font-size:12px;color:#fb923c;margin-bottom:8px">⚡ <b>TRIGGER ACTIVE</b> — both sides of a mirror pair hit last draw. WOL: play doubles/triples within next 3 draws</div>';
+        }
+        // Day of week alert
+        const todayDow=new Date().getDay();
+        if(todayDow===2||todayDow===4||todayDow===6){
+          h+='<div style="background:#160a2a;border:1px solid #a78bfa;border-radius:6px;padding:8px 12px;font-size:12px;color:#c4b5fd;margin-bottom:8px">📅 <b>DOUBLE DAY</b> — Today is '+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][todayDow]+'. WOL: favor doubles and double-pairs today</div>';
+        }
         if(carryover.length>0){
           h+=`<div style="background:#0a1500;border:1px solid #166534;border-radius:6px;padding:8px 12px;font-size:12px;color:#4ade80">`;
           h+=`♻ <b>Carryover digits</b> (appeared in both last 2 draws): <span style="font-family:monospace;font-size:14px;font-weight:900">${carryover.join(", ")}</span> — WOL: prioritize these`;
@@ -1483,7 +1599,8 @@ function render(){
 
         h+='<div class="card" style="background:#0a0800;border-color:#b45309;margin-bottom:16px">';
         h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
-        h+='<div style="font-size:13px;font-weight:700;color:#f59e0b;letter-spacing:1px">🔥 WOL HOT BOX — Ranked Digit Pool</div>';
+        h+='<div style="font-size:13px;font-weight:700;color:#f59e0b;letter-spacing:1px">🔥 WOL HOT BOX — Three-Tier Ranking</div>';
+        h+='<div style="font-size:10px;color:#78350f;margin-top:2px">Red Box (Super Hot) → Green Box (Hot) → Black Box (Warm) · Scores drive predictions</div>';
         h+='<div style="font-size:10px;color:#78350f;background:#1c0a00;padding:3px 8px;border-radius:4px;letter-spacing:1px">PHASE 4</div>';
         h+='</div>';
 
@@ -1546,6 +1663,10 @@ function render(){
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Straight</span><span style="font-family:monospace;color:#e2e8f0">${p.straight}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Box</span><span style="font-family:monospace;color:#e2e8f0">${p.box}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Mirror</span><span style="font-family:monospace;color:#a78bfa">${mirrorNum(p.numbers)}</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>WOL Tier</span><span style="font-family:monospace">${p.wolTier||"—"}</span></div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Carry</span><span style="font-family:monospace;color:#f97316">${p.carryOver||0}/${p.numbers.length} from last draw</span></div>
+            ${p.triggerActive?'<div style="font-size:10px;color:#f97316;font-weight:700;margin-top:2px">⚡ TRIGGER ACTIVE — mirror pair in last draw</div>':''}
+            ${p.doubleDay?'<div style="font-size:10px;color:#a78bfa;font-weight:700;margin-top:2px">📅 DOUBLE DAY (Tue/Thu/Sat)</div>':''}
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>Type</span><span style="font-family:monospace;color:#c084fc">${p.type}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>H/L</span><span style="font-family:monospace;color:#f9c74f">${p.hl}</span></div>
             <div style="display:flex;justify-content:space-between;font-size:11px;color:#475569"><span>E/O</span><span style="font-family:monospace;color:#00b4d8">${p.eo}</span></div>
