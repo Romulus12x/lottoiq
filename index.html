@@ -561,22 +561,49 @@ async function generateDailyPreds(){
   DAILY_GEN_MSG="Step 2/3: Checking yesterday\'s results...";render();
   autoCheckResults();
 
-  // Step 3: Generate today's predictions
-  DAILY_GEN_MSG="Step 3/3: Generating predictions...";render();
+  // Step 3: Generate session-matched predictions
+  // WOL: midday draws seed midday predictions, evening seeds evening
+  DAILY_GEN_MSG="Step 3/3: Generating session-matched predictions...";render();
   const snapshot={};
   STATES.forEach(function(st){
     allGames.forEach(function(gm){
       const key=st+"|"+gm;
-      const dr=DB.drawings[key]||[];
-      if(dr.length<10)return;
-      const an=analyze(dr,gm);
-      if(!an)return;
+      const allDraws=DB.drawings[key]||[];
+      if(allDraws.length<10)return;
       const ins=DB.inspector[key]||null;
-      const preds=predict(an,gm,ins);
-      if(!preds||!preds.length)return;
-      snapshot[key]=preds.slice(0,3).map(function(p){
-        return{straight:p.straight,box:p.box,confidence:p.confidence,hl:p.hl,eo:p.eo,sum:p.sum,hit:"PENDING"};
-      });
+      const slots=LC_MAP[key]||[];
+      const sessions=[...new Set(slots.map(function(s){return s.session;}))];
+
+      if(sessions.length<=1){
+        // Single session state (LA, etc.) — use all draws
+        const an=analyze(allDraws,gm);
+        if(!an)return;
+        const preds=predict(an,gm,ins);
+        if(!preds||!preds.length)return;
+        snapshot[key]=preds.slice(0,3).map(function(p){
+          return{straight:p.straight,box:p.box,confidence:p.confidence,hl:p.hl,eo:p.eo,sum:p.sum,hit:"PENDING",session:"all"};
+        });
+      } else {
+        // Multi-session: generate separate predictions per session
+        snapshot[key]=[];
+        sessions.forEach(function(sess){
+          const sessDraws=allDraws.filter(function(d){
+            return d.session===sess||(sess==="midday"&&(!d.session||d.session==="midday"))||
+                   (sess==="morning"&&d.session==="morning")||(sess==="day"&&d.session==="day")||
+                   (sess==="evening"&&d.session==="evening")||(sess==="night"&&d.session==="night");
+          });
+          if(sessDraws.length<8)return;
+          const an=analyze(sessDraws,gm);
+          if(!an)return;
+          const preds=predict(an,gm,ins);
+          if(!preds||!preds.length)return;
+          // Top 2 per session
+          preds.slice(0,2).forEach(function(p){
+            snapshot[key].push({straight:p.straight,box:p.box,confidence:p.confidence,hl:p.hl,eo:p.eo,sum:p.sum,hit:"PENDING",session:sess});
+          });
+        });
+        if(!snapshot[key].length)delete snapshot[key];
+      }
     });
   });
   DB.dailyPreds[dateKey]=snapshot;
@@ -620,16 +647,24 @@ function autoCheckResults(){
         return d.date===targetDate;
       });
 
-      // Also try matching by index — most recent draws at index 0
-      // If no date match, use draws within 2 days range as fallback
-      const drawsToCheck=dateDraws.length>0?dateDraws:[];
-
-      if(!drawsToCheck.length)return;
+      if(!dateDraws.length)return;
 
       preds.forEach(function(pred,idx){
         if(pred.hit!=="PENDING")return;
 
-        // Check each draw from that date
+        // Session-matched checking: if prediction has a session, only check that session's draw
+        var drawsToCheck=dateDraws;
+        if(pred.session&&pred.session!=="all"){
+          const sessMatch=dateDraws.filter(function(d){
+            return d.session===pred.session||
+              (pred.session==="midday"&&(!d.session||d.session==="midday"))||
+              (pred.session==="evening"&&d.session==="evening")||
+              (pred.session==="morning"&&d.session==="morning")||
+              (pred.session==="night"&&d.session==="night");
+          });
+          if(sessMatch.length)drawsToCheck=sessMatch;
+        }
+
         var hitType="MISS";
         drawsToCheck.forEach(function(draw){
           if(!draw.numbers||!draw.numbers.length)return;
@@ -637,7 +672,6 @@ function autoCheckResults(){
           const actualBox=[...draw.numbers].sort().join("");
           const predStraight=pred.straight;
           const predBox=pred.box||[...pred.straight.split("")].sort().join("");
-
           if(actual===predStraight){hitType="STRAIGHT";}
           else if(actualBox===predBox&&hitType==="MISS"){hitType="BOX";}
         });
@@ -1339,7 +1373,7 @@ function render(){
           h+='<div style="font-size:9px;font-weight:700;color:'+confColor+'">'+p.confidence+'%</div>';
           h+='</div>';
           h+='<div style="font-family:monospace;font-size:22px;font-weight:900;color:#f9c74f;letter-spacing:2px">'+p.straight+'</div>';
-          h+='<div style="font-size:10px;color:#475569;margin-top:2px">box: '+p.box+' · '+p.hl+' · Σ'+p.sum+'</div>';
+          h+='<div style="font-size:10px;color:#475569;margin-top:2px">box: '+p.box+' · '+p.hl+' · Σ'+p.sum+(p.session&&p.session!=="all"?' · <span style="color:#60a5fa">'+p.session+'</span>':'')+'</div>';
           if(p.hit!="PENDING"){
             h+='<div style="margin-top:6px;font-size:10px;font-weight:700;color:'+hitColor+'">'+hitLabel+'</div>';
           } else {
@@ -2180,6 +2214,120 @@ function render(){
       h+='</div>';
     })();
     // ─────────────────────────────────────────────────────────────────────────
+    // ── Hit Rate Analytics ────────────────────────────────────────────────────
+    (function(){
+      const stats30=getDailyStats(30);
+      const stats7=getDailyStats(7);
+      if(stats30.total<1)return;
+
+      h+='<div class="card" style="background:#080d18;border-color:#1e3a5f">';
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">';
+      h+='<div class="ct" style="margin-bottom:0">📊 Prediction Analytics</div>';
+      h+='<button class="btn bh" style="font-size:11px;padding:5px 10px" onclick="autoCheckResults();render()">✓ Rescore All</button>';
+      h+='</div>';
+
+      // Overall rate cards
+      h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin-bottom:16px">';
+      // 7-day
+      var r7=stats7.total>0?Math.round(((stats7.straight+stats7.box)/stats7.total)*100):null;
+      var r30=stats30.total>0?Math.round(((stats30.straight+stats30.box)/stats30.total)*100):null;
+      var c7=r7===null?"#334155":r7>20?"#43aa8b":r7>10?"#f9c74f":"#ef4444";
+      var c30=r30===null?"#334155":r30>20?"#43aa8b":r30>10?"#f9c74f":"#ef4444";
+
+      h+='<div style="background:#0c1222;border:1px solid #1e293b;border-radius:8px;padding:12px;text-align:center">';
+      h+='<div style="font-size:32px;font-weight:900;color:'+c7+'">'+(r7===null?"—":r7+"%")+'</div>';
+      h+='<div style="font-size:10px;color:#475569;margin-top:2px">7-DAY HIT RATE</div>';
+      h+='<div style="font-size:10px;color:#334155">'+stats7.total+' scored</div>';
+      h+='</div>';
+
+      h+='<div style="background:#0c1222;border:1px solid #1e293b;border-radius:8px;padding:12px;text-align:center">';
+      h+='<div style="font-size:32px;font-weight:900;color:'+c30+'">'+(r30===null?"—":r30+"%")+'</div>';
+      h+='<div style="font-size:10px;color:#475569;margin-top:2px">30-DAY HIT RATE</div>';
+      h+='<div style="font-size:10px;color:#334155">'+stats30.total+' scored</div>';
+      h+='</div>';
+
+      h+='<div style="background:#0c1222;border:1px solid #1e293b;border-radius:8px;padding:12px;text-align:center">';
+      h+='<div style="font-size:32px;font-weight:900;color:#f9c74f">'+stats30.straight+'</div>';
+      h+='<div style="font-size:10px;color:#475569;margin-top:2px">STRAIGHTS</div>';
+      h+='<div style="font-size:10px;color:#334155">30 days</div>';
+      h+='</div>';
+
+      h+='<div style="background:#0c1222;border:1px solid #1e293b;border-radius:8px;padding:12px;text-align:center">';
+      h+='<div style="font-size:32px;font-weight:900;color:#43aa8b">'+stats30.box+'</div>';
+      h+='<div style="font-size:10px;color:#475569;margin-top:2px">BOX HITS</div>';
+      h+='<div style="font-size:10px;color:#334155">30 days</div>';
+      h+='</div>';
+      h+='</div>';
+
+      // Best performing state/game breakdown
+      var byGame=stats30.byGame;
+      var gameEntries=Object.entries(byGame).filter(function(e){return e[1].total>=3;});
+      if(gameEntries.length>0){
+        gameEntries.sort(function(a,b){
+          var ra=(a[1].straight+a[1].box)/(a[1].total||1);
+          var rb=(b[1].straight+b[1].box)/(b[1].total||1);
+          return rb-ra;
+        });
+
+        h+='<div style="font-size:10px;color:#334155;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Performance by State/Game (30 days, min 3 scored)</div>';
+        h+='<div style="display:flex;flex-direction:column;gap:6px">';
+
+        gameEntries.forEach(function(e){
+          var gk=e[0],gs=e[1];
+          var parts=gk.split("|");
+          var rate=Math.round(((gs.straight+gs.box)/gs.total)*100);
+          var rc2=rate>20?"#43aa8b":rate>10?"#f9c74f":"#ef4444";
+          var barW=Math.min(100,rate*3)+"px"; // scale bar
+
+          h+='<div style="display:flex;align-items:center;gap:8px">';
+          h+='<div style="font-size:11px;color:#94a3b8;width:80px;flex-shrink:0">'+(STATE_LABELS[parts[0]]||parts[0])+'</div>';
+          h+='<div style="font-size:10px;color:#475569;width:50px;flex-shrink:0">'+parts[1]+'</div>';
+          h+='<div style="flex:1;height:6px;background:#1e293b;border-radius:3px;overflow:hidden">';
+          h+='<div style="height:6px;width:'+barW+';background:'+rc2+';border-radius:3px;transition:width 0.3s"></div>';
+          h+='</div>';
+          h+='<div style="font-size:11px;font-weight:700;color:'+rc2+';width:36px;text-align:right">'+rate+'%</div>';
+          h+='<div style="font-size:10px;color:#334155;width:60px;text-align:right">'+gs.straight+'S '+gs.box+'B/'+gs.total+'</div>';
+          h+='</div>';
+        });
+        h+='</div>';
+
+        // Best and worst
+        var best=gameEntries[0];
+        var worst=gameEntries[gameEntries.length-1];
+        var bestRate=Math.round(((best[1].straight+best[1].box)/best[1].total)*100);
+        var worstRate=Math.round(((worst[1].straight+worst[1].box)/worst[1].total)*100);
+        var bestParts=best[0].split("|");
+        var worstParts=worst[0].split("|");
+
+        h+='<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">';
+        h+='<div style="background:#052e16;border:1px solid #166534;border-radius:6px;padding:8px 12px;flex:1">';
+        h+='<div style="font-size:9px;color:#4ade80;font-weight:700;letter-spacing:1px">🏆 BEST PERFORMING</div>';
+        h+='<div style="font-size:13px;font-weight:700;color:#e2e8f0;margin-top:2px">'+(STATE_LABELS[bestParts[0]]||bestParts[0])+' '+bestParts[1]+'</div>';
+        h+='<div style="font-size:20px;font-weight:900;color:#43aa8b">'+bestRate+'%</div>';
+        h+='</div>';
+
+        if(worst[0]!==best[0]){
+          h+='<div style="background:#450a0a;border:1px solid #7f1d1d;border-radius:6px;padding:8px 12px;flex:1">';
+          h+='<div style="font-size:9px;color:#fca5a5;font-weight:700;letter-spacing:1px">📉 NEEDS IMPROVEMENT</div>';
+          h+='<div style="font-size:13px;font-weight:700;color:#e2e8f0;margin-top:2px">'+(STATE_LABELS[worstParts[0]]||worstParts[0])+' '+worstParts[1]+'</div>';
+          h+='<div style="font-size:20px;font-weight:900;color:#ef4444">'+worstRate+'%</div>';
+          h+='</div>';
+        }
+        h+='</div>';
+
+        // Pending count
+        var pendingCount=0;
+        Object.values(DB.dailyPreds).forEach(function(snap){
+          Object.values(snap).forEach(function(preds){
+            preds.forEach(function(p){if(p.hit==="PENDING")pendingCount++;});
+          });
+        });
+        if(pendingCount>0){
+          h+='<div style="margin-top:10px;font-size:11px;color:#f9c74f">⚠ '+pendingCount+' predictions still PENDING — sync latest draws then click ✓ Rescore All to update</div>';
+        }
+      }
+      h+='</div>';
+    })();
 
     let totalPreds=0,hits={STRAIGHT:0,BOX:0,MISS:0};
     results.forEach(function(r){r.preds.forEach(function(p){totalPreds++;hits[p.hit]=(hits[p.hit]||0)+1;});});
