@@ -3701,21 +3701,28 @@ window.onerror = function(msg, src, line, col, err) {
 try {
   console.log("LottoIQ: starting load...");
   loadDB();
-  // Reset false MISSes: any MISS that has no dated draw data should be PENDING
+  // One-time migration: reset ALL scored predictions to PENDING
+  // Previous scoring was broken (false MISSes from undated draws)
+  // v8 key signals fresh scoring needed
   (function(){
+    const SCORE_VERSION="score_v2";
+    if(localStorage.getItem(SCORE_VERSION))return; // already migrated
+    var resetCount=0;
     Object.entries(DB.dailyPreds).forEach(function(de){
-      const dateKey=de[0],snap=de[1];
-      Object.entries(snap).forEach(function(ge){
-        const gameKey=ge[0],preds=ge[1];
-        const drawings=DB.drawings[gameKey]||[];
-        const datedDraws=drawings.filter(function(d){return d.date&&d.date.length>0;});
-        if(!datedDraws.length){
-          // No dated draws at all — reset all MISSes to PENDING
-          preds.forEach(function(p){if(p.hit==="MISS")p.hit="PENDING";});
-        }
+      Object.entries(de[1]).forEach(function(ge){
+        ge[1].forEach(function(p){
+          if(p.hit==="MISS"||p.hit==="PENDING"){
+            p.hit="PENDING";
+            resetCount++;
+          }
+        });
       });
     });
-    saveDB();
+    if(resetCount>0){
+      saveDB();
+      console.log("LottoIQ: reset "+resetCount+" predictions to PENDING for clean rescoring");
+    }
+    localStorage.setItem(SCORE_VERSION,"1");
   })();
   autoCheckResults(); // WOL auto-score past predictions against draw history
   seedAllP4Combos(); // Pick 4 combo overdue data
