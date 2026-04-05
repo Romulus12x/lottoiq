@@ -647,12 +647,17 @@ function autoCheckResults(){
         return d.date===targetDate;
       });
 
-      if(!dateDraws.length)return;
+      // Only score if we have draws with actual dates for this day
+      // Seeded draws have empty dates — skip them to avoid false MISSes
+      const datedDraws=drawings.filter(function(d){return d.date&&d.date.length>0;});
+      if(!datedDraws.length)return; // no dated draws in history at all for this game
+
+      if(!dateDraws.length)return; // no draws found for this specific date — leave PENDING
 
       preds.forEach(function(pred,idx){
         if(pred.hit!=="PENDING")return;
 
-        // Session-matched checking: if prediction has a session, only check that session's draw
+        // Session-matched checking
         var drawsToCheck=dateDraws;
         if(pred.session&&pred.session!=="all"){
           const sessMatch=dateDraws.filter(function(d){
@@ -662,7 +667,13 @@ function autoCheckResults(){
               (pred.session==="morning"&&d.session==="morning")||
               (pred.session==="night"&&d.session==="night");
           });
-          if(sessMatch.length)drawsToCheck=sessMatch;
+          // If we have session-specific draws, use them
+          // If not, don't mark as MISS — the session draw may not be synced yet
+          if(sessMatch.length){
+            drawsToCheck=sessMatch;
+          } else {
+            return; // leave PENDING — session draw not in history yet
+          }
         }
 
         var hitType="MISS";
@@ -3690,6 +3701,22 @@ window.onerror = function(msg, src, line, col, err) {
 try {
   console.log("LottoIQ: starting load...");
   loadDB();
+  // Reset false MISSes: any MISS that has no dated draw data should be PENDING
+  (function(){
+    Object.entries(DB.dailyPreds).forEach(function(de){
+      const dateKey=de[0],snap=de[1];
+      Object.entries(snap).forEach(function(ge){
+        const gameKey=ge[0],preds=ge[1];
+        const drawings=DB.drawings[gameKey]||[];
+        const datedDraws=drawings.filter(function(d){return d.date&&d.date.length>0;});
+        if(!datedDraws.length){
+          // No dated draws at all — reset all MISSes to PENDING
+          preds.forEach(function(p){if(p.hit==="MISS")p.hit="PENDING";});
+        }
+      });
+    });
+    saveDB();
+  })();
   autoCheckResults(); // WOL auto-score past predictions against draw history
   seedAllP4Combos(); // Pick 4 combo overdue data
   console.log("LottoIQ: loadDB done, seeding TX...");
