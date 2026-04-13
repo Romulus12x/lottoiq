@@ -741,6 +741,65 @@ function gresults(){return DB.results[gkey()]||[]}
 function addDr(n){const k=gkey();const ex=DB.drawings[k]||[];DB.drawings[k]=[...n,...ex].slice(0,1000);bustCache(k);saveDB();render()}
 function clDr(){if(!confirm("Delete all drawings for "+ST+" "+GM+"?"))return;const k=gkey();delete DB.drawings[k];bustCache(k);saveDB();render()}
 function clInsp(){if(!confirm("Clear Inspector data for "+ST+" "+GM+"?"))return;const k=gkey();delete DB.inspector[k];bustCache(k);saveDB();render()}
+
+function parseInspectorText(text){
+  var result={source:"paste"};
+  var m;
+  // Combination Types
+  var comboSec=text.match(/Combination Types:[\s\S]*?(?=\n\s*\n|$)/);
+  if(comboSec){
+    var combos={};
+    var ctPat=/(ABCDE|AABCD|AABBC|AAABC|AAABB|AAAAB|AAAAA|ABCD|AABC|AABB|AAAB|AAAA|single|double|triple|quad)\s+(\d+)\s+([\d.]+)%/g;
+    while((m=ctPat.exec(comboSec[0]))!==null) combos[m[1]]={count:parseInt(m[2]),pct:parseFloat(m[3])};
+    if(Object.keys(combos).length){result.comboTypes=combos;result.dominantType=Object.entries(combos).sort((a,b)=>b[1].count-a[1].count)[0][0];}
+  }
+  // High/Low
+  var hlSec=text.match(/High\/Low:[\s\S]*?(?=Even\/Odd:|$)/);
+  if(hlSec){var hl={};var hlPat=/([HL]{3,5})\s+(\d+)\s+([\d.]+)%/g;while((m=hlPat.exec(hlSec[0]))!==null)hl[m[1]]=parseInt(m[2]);if(Object.keys(hl).length){result.hlDist=hl;result.dominantHL=Object.entries(hl).sort((a,b)=>b[1]-a[1])[0][0];}}
+  // Even/Odd
+  var eoSec=text.match(/Even\/Odd:[\s\S]*?(?=In\/Out:|Sums:|$)/);
+  if(eoSec){var eo={};var eoPat=/([EO]{3,5})\s+(\d+)\s+([\d.]+)%/g;while((m=eoPat.exec(eoSec[0]))!==null)eo[m[1]]=parseInt(m[2]);if(Object.keys(eo).length){result.eoDist=eo;result.dominantEO=Object.entries(eo).sort((a,b)=>b[1]-a[1])[0][0];}}
+  // Key Numbers
+  var knSec=text.match(/Key Numbers:[\s\S]*?(?=Pairs:|$)/);
+  if(knSec){var kn={};var knPat=/^(\d)\s+(\d+)\s+([\d.]+)%/gm;while((m=knPat.exec(knSec[0]))!==null)kn[m[1]]=parseFloat(m[3]);if(Object.keys(kn).length)result.keyNumbers=kn;}
+  // Pairs
+  var pairSec=text.match(/(?:^|\n)Pairs:[\s\S]*?(?=Triads:|$)/);
+  if(pairSec){var pairs=[];var pPat=/^(\d{2})\s+(\d+)\s+([\d.]+)%/gm;while((m=pPat.exec(pairSec[0]))!==null)pairs.push([m[1],parseInt(m[2]),parseFloat(m[3])]);pairs.sort((a,b)=>b[1]-a[1]);if(pairs.length)result.topPairs=pairs.slice(0,20).map(p=>[p[0],p[1]]);}
+  // Sums
+  var sumSec=text.match(/(?:^|\n)Sums:[\s\S]*?(?=Root Sums:|$)/);
+  if(sumSec){var sums=[];var sPat=/^(\d+)\s+(\d+)\s+([\d.]+)%/gm;while((m=sPat.exec(sumSec[0]))!==null)sums.push([parseInt(m[1]),parseInt(m[2])]);sums.sort((a,b)=>b[1]-a[1]);if(sums.length)result.hotSums=sums.slice(0,8).map(s=>s[0]);}
+  // Root Sums
+  var rsSec=text.match(/Root Sums:[\s\S]*?(?=Sum Last Digit:|$)/);
+  if(rsSec){var rs=[];var rPat=/^(\d+)\s+(\d+)\s+([\d.]+)%/gm;while((m=rPat.exec(rsSec[0]))!==null)rs.push([parseInt(m[1]),parseInt(m[2])]);rs.sort((a,b)=>b[1]-a[1]);if(rs.length)result.hotRoots=rs.slice(0,5).map(r=>r[0]);}
+  // Triads
+  var triadSec=text.match(/Triads:[\s\S]*?(?=Quads:|$)/);
+  if(triadSec){var triads=[];var tPat=/^(\d{3})\s+(\d+)\s+([\d.]+)%/gm;while((m=tPat.exec(triadSec[0]))!==null)triads.push([m[1],parseInt(m[2]),parseFloat(m[3])]);triads.sort((a,b)=>b[1]-a[1]);if(triads.length)result.topTriads=triads.slice(0,15);}
+  // Combinations inspected
+  var ci=text.match(/Combinations Inspected:\s*(\d+)/);
+  if(ci)result.combinationsInspected=parseInt(ci[1]);
+  return result;
+}
+
+var INSP_PASTE_TEXT="",INSP_PASTE_PREVIEW=null,INSP_PASTE_ERROR="";
+
+function doInspPaste(){
+  var t=document.getElementById("inspPasteArea");
+  if(!t||!t.value.trim()){INSP_PASTE_ERROR="Paste the Inspector text first";render();return;}
+  var txt=t.value;
+  if(!txt.includes("Combination Types:")&&!txt.includes("High/Low:")&&!txt.includes("Key Numbers:")){INSP_PASTE_ERROR="Doesn't look like LotteryPost Inspector output. Copy the full page text.";render();return;}
+  INSP_PASTE_TEXT=txt;INSP_PASTE_ERROR="";
+  var parsed=parseInspectorText(txt);
+  if(!parsed.dominantType&&!parsed.keyNumbers){INSP_PASTE_ERROR="Couldn't parse Inspector data — make sure you copied the full output.";render();return;}
+  INSP_PASTE_PREVIEW=parsed;render();
+}
+
+function confirmInspPaste(){
+  if(!INSP_PASTE_PREVIEW)return;
+  var key=gkey();
+  var existing=DB.inspector[key]||{};
+  DB.inspector[key]=Object.assign({},existing,INSP_PASTE_PREVIEW);
+  saveDB();INSP_PASTE_TEXT="";INSP_PASTE_PREVIEW=null;INSP_PASTE_ERROR="";render();
+}
 function clDue(){
   if(!confirm("Clear "+dueTypeLabel(DUE_TAB)+" for "+ST+" "+GM+"?"))return;
   const k=gkey();
@@ -2022,12 +2081,45 @@ function render(){
     const ins=ginsp();
     h+=`<div class="card"><div class="ct">🔬 Import Inspector Data — ${ST} ${GM}</div>
       <div style="font-size:13px;color:#64748b;margin-bottom:16px;line-height:1.6">
-        Run <strong style="color:#e2e8f0">Inspector ${dg}</strong> on LotteryPost for <strong style="color:#e2e8f0">${ST} ${GM}</strong>. Screenshot each section of the results (up to 5 screenshots) and upload them all — the AI will read and merge them into one complete dataset.
+        On LotteryPost, open <strong style="color:#e2e8f0">Inspector ${dg}</strong> for <strong style="color:#e2e8f0">${ST} ${GM}</strong>. Run it for all available history. Then <strong style="color:#e2e8f0">select all text (Ctrl+A) and copy (Ctrl+C)</strong> from the results page. Paste it below — no screenshots needed.
+      </div>
+      <div style="background:#0a0f1e;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:#475569">
+        📋 <strong style="color:#94a3b8">How to copy:</strong> Run Inspector on LotteryPost → wait for results → Ctrl+A to select all → Ctrl+C to copy → paste below. The parser reads: Combination Types, H/L, E/O, Key Numbers, Pairs, Sums, Triads automatically.
       </div>
       ${ins?`<div style="padding:12px;background:#0a1a0a;border:1px solid #166534;border-radius:6px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
         <div><span style="color:#4ade80;font-weight:700;font-size:13px">✦ Inspector data loaded</span><span style="color:#475569;font-size:12px;margin-left:10px">${ins.notes||""} ${ins.combinationsInspected?"· "+ins.combinationsInspected+" combinations":""}</span></div>
         <button class="btn bh" onclick="clInsp()">🗑 Clear</button>
       </div>`:""}
+
+      <!-- Inspector Paste UI -->
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">📋 Paste Inspector Output (Recommended)</div>
+        ${INSP_PASTE_PREVIEW?`
+          <div style="background:#0a1a0a;border:1px solid #166534;border-radius:8px;padding:14px;margin-bottom:12px">
+            <div style="color:#4ade80;font-weight:700;font-size:13px;margin-bottom:10px">✓ Inspector data parsed — preview:</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;font-size:12px">
+              ${INSP_PASTE_PREVIEW.dominantType?`<div><span style="color:#475569">Structure: </span><span style="color:#ff4e00;font-weight:700">${INSP_PASTE_PREVIEW.dominantType}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.dominantHL?`<div><span style="color:#475569">H/L: </span><span style="color:#f9c74f;font-weight:700">${INSP_PASTE_PREVIEW.dominantHL}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.dominantEO?`<div><span style="color:#475569">E/O: </span><span style="color:#00b4d8;font-weight:700">${INSP_PASTE_PREVIEW.dominantEO}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.hotSums&&INSP_PASTE_PREVIEW.hotSums.length?`<div><span style="color:#475569">Hot Sums: </span><span style="color:#43aa8b;font-family:monospace">${INSP_PASTE_PREVIEW.hotSums.join(", ")}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.hotRoots&&INSP_PASTE_PREVIEW.hotRoots.length?`<div><span style="color:#475569">Root Sums: </span><span style="color:#43aa8b;font-family:monospace">${INSP_PASTE_PREVIEW.hotRoots.join(", ")}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.keyNumbers?`<div><span style="color:#475569">Hot digits: </span><span style="color:#e2e8f0;font-family:monospace">${Object.entries(INSP_PASTE_PREVIEW.keyNumbers).sort((a,b)=>b[1]-a[1]).slice(0,5).map(e=>e[0]).join(" ")}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.topPairs&&INSP_PASTE_PREVIEW.topPairs.length?`<div><span style="color:#475569">Top pairs: </span><span style="color:#e2e8f0;font-family:monospace">${INSP_PASTE_PREVIEW.topPairs.slice(0,5).map(p=>p[0]).join(" ")}</span></div>`:""}
+              ${INSP_PASTE_PREVIEW.combinationsInspected?`<div><span style="color:#475569">Combos: </span><span style="color:#e2e8f0">${INSP_PASTE_PREVIEW.combinationsInspected.toLocaleString()}</span></div>`:""}
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button class="btn bg" onclick="confirmInspPaste()">✓ Save Inspector Data</button>
+              <button class="btn bh" onclick="INSP_PASTE_PREVIEW=null;INSP_PASTE_TEXT='';render()">Cancel</button>
+            </div>
+          </div>
+        `:`
+          <textarea id="inspPasteArea" rows="8" style="width:100%;background:#111827;border:1px solid #334155;border-radius:6px;color:#e2e8f0;padding:10px;font-size:12px;font-family:monospace;resize:vertical" placeholder="Paste the full LotteryPost Inspector output here (Ctrl+A then Ctrl+C from the Inspector results page)...">${INSP_PASTE_TEXT}</textarea>
+          ${INSP_PASTE_ERROR?`<div style="color:#ef4444;font-size:12px;margin-top:6px">⚠ ${INSP_PASTE_ERROR}</div>`:""}
+          <button class="btn bp" style="margin-top:10px" onclick="doInspPaste()">🔬 Parse Inspector Data</button>
+        `}
+      </div>
+
+      <div style="border-top:1px solid #1e293b;margin:16px 0;position:relative"><span style="position:absolute;left:50%;transform:translateX(-50%);top:-10px;background:#0c1222;padding:0 12px;font-size:11px;color:#334155">or use screenshots (legacy)</span></div>
 
       <!-- Screenshot slots -->
       <div style="margin-bottom:14px">
