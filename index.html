@@ -419,7 +419,17 @@ function predict(an,game,ins){
     if(pick.length!==dg)continue;
     const key=[...pick].sort().join("-");if(seen.has(key))continue;seen.add(key);
     const base=pick.reduce((s,n)=>s+scores[n],0)/dg;
-    const conf=Math.min(99,Math.round((base/mp)*65+pb(pick)));
+    // Relative confidence: compare this pick's avg score vs all-digit avg score
+    const allScoreVals=Object.values(scores);
+    const avgScore=allScoreVals.reduce((a,b)=>a+b,0)/allScoreVals.length;
+    const minScore=Math.min(...allScoreVals);
+    // Normalize: 0% = pick uses all minimum-score digits, 100% = pick uses all max-score digits
+    const scoreRange=mp-minScore||1;
+    const relScore=(base-minScore)/scoreRange; // 0-1
+    // Pattern bonus scaled to 0-35 range (not 70)
+    const patBonus=Math.min(35,pb(pick)*0.5);
+    // Final: 30-85 range based on relative digit quality + pattern match
+    const conf=Math.max(15,Math.min(85,Math.round(relScore*50+patBonus+20)));
     const redUsed=pick.filter(n=>redBox.includes(n)).length;
     const carryUsed=pick.filter(n=>lastDrawNums.includes(n)).length;
     picks.push({
@@ -458,7 +468,7 @@ function mirrorDigit(d){return String((parseInt(d)+5)%10)}
 function mirrorNum(nums){return nums.map(mirrorDigit).join("")}
 
 // State
-let DB={drawings:{},inspector:{},due:{},results:{},notes:{}};
+let DB={drawings:{},inspector:{},due:{},results:{},notes:{}};let MY_PLAYS=[];
 let ST="FL",GM="Pick 3",TAB="dashboard",IM="paste",DS="predictions",CS="DE";
 let DRAW_SESSION="both"; // "midday","evening","both"
 let PT="",PSESSION="midday",MD=["","",""],MDATE="",MSESSION="midday";
@@ -498,8 +508,8 @@ function bustCache(key){
 // Auto-sync state
 let SYNC_LOADING=false,SYNC_MSG="",SYNC_SESSION="both";
 
-function loadDB(){const s=sget();DB.drawings=s.drawings||{};DB.inspector=s.inspector||{};DB.due=s.due||{};DB.results=s.results||{};DB.notes=s.notes||{};DB.dailyPreds=s.dailyPreds||{}}
-function saveDB(){sset({drawings:DB.drawings,inspector:DB.inspector,due:DB.due,results:DB.results,notes:DB.notes,dailyPreds:DB.dailyPreds})}
+function loadDB(){const s=sget();DB.drawings=s.drawings||{};DB.inspector=s.inspector||{};DB.due=s.due||{};DB.results=s.results||{};DB.notes=s.notes||{};DB.dailyPreds=s.dailyPreds||{};MY_PLAYS=s.myPlays||[];}
+function saveDB(){sset({drawings:DB.drawings,inspector:DB.inspector,due:DB.due,results:DB.results,notes:DB.notes,dailyPreds:DB.dailyPreds,myPlays:MY_PLAYS})}
 function getTodayKey(){const d=new Date();return d.getFullYear()+"-"+(d.getMonth()+1).toString().padStart(2,"0")+"-"+d.getDate().toString().padStart(2,"0")}
 function getDailyPreds(dateKey){return DB.dailyPreds[dateKey]||{}}
 let DAILY_GEN_LOADING=false,DAILY_GEN_MSG="";
@@ -1417,17 +1427,23 @@ function render(){
       }
 
       if(hasToday){
-        // Build ranked list of all predictions by confidence
+        // Build ranked list — My Plays first, then by confidence
         var allPicks=[];
         Object.entries(todaySnap).forEach(function(e){
           var gk=e[0],preds=e[1];
           var parts=gk.split("|");
           preds.forEach(function(p,i){
-            allPicks.push({gk,st:parts[0],gm:parts[1],pred:p,rank:i});
+            allPicks.push({gk,st:parts[0],gm:parts[1],pred:p,rank:i,isMyPlay:MY_PLAYS.length>0&&MY_PLAYS.includes(gk)});
           });
         });
-        allPicks.sort(function(a,b){return b.pred.confidence-a.pred.confidence;});
-        var topPicks=allPicks.slice(0,8);
+        // Sort: My Plays first (by confidence), then rest (by confidence)
+        allPicks.sort(function(a,b){
+          if(a.isMyPlay&&!b.isMyPlay)return -1;
+          if(!a.isMyPlay&&b.isMyPlay)return 1;
+          return b.pred.confidence-a.pred.confidence;
+        });
+        var topPicks=MY_PLAYS.length>0?allPicks.filter(function(p){return p.isMyPlay;}).slice(0,8):allPicks.slice(0,8);
+        if(topPicks.length===0)topPicks=allPicks.slice(0,8);
 
         h+='<div style="font-size:10px;color:#334155;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px">Top Plays Today (by confidence)</div>';
         h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px">';
@@ -2607,6 +2623,42 @@ function render(){
     h+='</div>';
     h+='</div>';
 
+    // My Plays section
+    h+='<div style="border-top:1px solid #1e293b;padding-top:18px;margin-bottom:24px">';
+    h+='<div style="font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:6px">🎯 My Plays — Focus Filter</div>';
+    h+='<div style="font-size:12px;color:#64748b;margin-bottom:14px;line-height:1.6">Select which state/game combos you actually play. Morning Brief will show <strong style="color:#e2e8f0">only these games</strong> at the top, and hit rate tracking will focus here. Leave all unchecked to show everything.</div>';
+    var allGamesForPlays=["Pick 3","Pick 4","Pick 5"];
+    h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:12px">';
+    STATES.forEach(function(st){
+      allGamesForPlays.forEach(function(gm){
+        var k=st+"|"+gm;
+        var hasData=(DB.drawings[k]||[]).length>=10;
+        if(!hasData)return;
+        var active=MY_PLAYS.includes(k);
+        var stLabel=STATE_LABELS[st]||st;
+        var bdr=active?"1px solid #ff4e00":"1px solid #1e293b";
+        var bg=active?"#1a0800":"#080d18";
+        var cbg=active?"#ff4e00":"transparent";
+        var cbdr=active?"#ff4e00":"#334155";
+        var tc=active?"#e2e8f0":"#64748b";
+        var fw=active?"700":"400";
+        var esc=k.replace(/[|]/g,"__");
+        h+='<div onclick="toggleMyPlay('+JSON.stringify(k)+')" style="cursor:pointer;padding:8px 12px;border-radius:6px;border:'+bdr+';background:'+bg+';display:flex;align-items:center;gap:8px">';
+        h+='<div style="width:14px;height:14px;border-radius:3px;border:2px solid '+cbdr+';background:'+cbg+';flex-shrink:0;display:flex;align-items:center;justify-content:center">';
+        if(active)h+='<div style="color:#fff;font-size:10px;font-weight:900">✓</div>';
+        h+='</div>';
+        h+='<div style="font-size:12px;color:'+tc+';font-weight:'+fw+'">'+stLabel+' '+gm+'</div>';
+        h+='</div>';
+      });
+    });
+    h+='</div>';
+    if(MY_PLAYS.length>0){
+      h+='<div style="font-size:12px;color:#ff4e00;font-weight:700">'+MY_PLAYS.length+' game'+(MY_PLAYS.length>1?"s":"")+" selected as My Plays</div>";
+    } else {
+      h+='<div style="font-size:12px;color:#334155">No filter active — showing all games</div>';
+    }
+    h+='</div>';
+
     // Info section
     h+='<div style="border-top:1px solid #1e293b;padding-top:18px">';
     h+='<div style="font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:12px">📱 Using on Mobile</div>';
@@ -2638,6 +2690,12 @@ function render(){
 }
 
 // Handlers
+function toggleMyPlay(k){
+  var idx=MY_PLAYS.indexOf(k);
+  if(idx>=0)MY_PLAYS.splice(idx,1);
+  else MY_PLAYS.push(k);
+  saveDB();render();
+}
 function setTab(t){TAB=t;render()}
 function doSaveApiKey(){
   const v=document.getElementById("apiKeyInput").value.trim();
