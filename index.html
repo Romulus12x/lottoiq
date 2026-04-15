@@ -2643,7 +2643,8 @@ function render(){
         var tc=active?"#e2e8f0":"#64748b";
         var fw=active?"700":"400";
         var esc=k.replace(/[|]/g,"__");
-        h+='<div onclick="toggleMyPlay('+JSON.stringify(k)+')" style="cursor:pointer;padding:8px 12px;border-radius:6px;border:'+bdr+';background:'+bg+';display:flex;align-items:center;gap:8px">';
+        var safeKey=k.replace(/\|/g,'__PIPE__');
+        h+='<div onclick="toggleMyPlay(decodeMyPlayKey(this))" data-mpkey="'+safeKey+'" style="cursor:pointer;padding:8px 12px;border-radius:6px;border:'+bdr+';background:'+bg+';display:flex;align-items:center;gap:8px">';
         h+='<div style="width:14px;height:14px;border-radius:3px;border:2px solid '+cbdr+';background:'+cbg+';flex-shrink:0;display:flex;align-items:center;justify-content:center">';
         if(active)h+='<div style="color:#fff;font-size:10px;font-weight:900">✓</div>';
         h+='</div>';
@@ -2690,6 +2691,9 @@ function render(){
 }
 
 // Handlers
+function decodeMyPlayKey(el){
+  return (el.dataset.mpkey||'').replace(/__PIPE__/g,'|');
+}
 function toggleMyPlay(k){
   var idx=MY_PLAYS.indexOf(k);
   if(idx>=0)MY_PLAYS.splice(idx,1);
