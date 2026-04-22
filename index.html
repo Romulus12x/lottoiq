@@ -79,8 +79,11 @@ function fbInit(){
       return;
     }
     if(FB_APP)return; // already initialized
+    console.log("LottoIQ: Firebase SDK found, initializing...");
     FB_APP=firebase.initializeApp(FB_CONFIG);
-    FB_DB=firebase.database();
+    console.log("LottoIQ: App initialized, connecting to database...");
+    FB_DB=firebase.database(FB_APP);
+    console.log("LottoIQ: Database connected:", FB_DB?'yes':'no');
     FB_UID=localStorage.getItem('lottoiq_uid');
     if(!FB_UID){
       FB_UID='user_'+Math.random().toString(36).slice(2)+Date.now().toString(36);
