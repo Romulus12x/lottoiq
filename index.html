@@ -92,21 +92,24 @@ function fbInit(){
     console.log("LottoIQ: Firebase connected, UID="+FB_UID);
     // Now that Firebase is ready, check for newer cloud data
     fbLoad(function(fbData){
-      if(!fbData||!fbData.drawings)return;
-      const localDrawCount=Object.keys(DB.drawings||{}).length;
-      const fbDrawCount=Object.keys(fbData.drawings||{}).length;
-      if(fbDrawCount>localDrawCount){
+      const localData=sget();
+      const localGames=Object.keys(localData.drawings||{}).length;
+      const fbGames=fbData?Object.keys(fbData.drawings||{}).length:0;
+      console.log("LottoIQ: Firebase check - local games:"+localGames+" firebase games:"+fbGames);
+      if(fbGames>localGames){
+        // Firebase has more — pull it down
         DB.drawings=fbData.drawings||DB.drawings;
         DB.inspector=fbData.inspector||DB.inspector;
         DB.dailyPreds=fbData.dailyPreds||DB.dailyPreds;
         DB.results=fbData.results||DB.results;
         DB.notes=fbData.notes||DB.notes;
         MY_PLAYS=fbData.myPlays||MY_PLAYS;
-        console.log("LottoIQ: synced newer data from Firebase ("+fbDrawCount+" vs "+localDrawCount+" games)");
+        console.log("LottoIQ: synced newer data from Firebase");
         render();
-      } else if(localDrawCount>0&&fbDrawCount===0){
-        fbSave(sget());
-        console.log("LottoIQ: migrated local data to Firebase");
+      } else if(localGames>0){
+        // Push local data up to Firebase
+        fbSave(localData);
+        console.log("LottoIQ: pushed local data to Firebase ("+localGames+" games)");
       }
     });
   }catch(e){
