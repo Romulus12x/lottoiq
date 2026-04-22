@@ -97,14 +97,20 @@ function fbInit(){
       const fbGames=fbData?Object.keys(fbData.drawings||{}).length:0;
       console.log("LottoIQ: Firebase check - local games:"+localGames+" firebase games:"+fbGames);
       if(fbGames>localGames){
-        // Firebase has more — pull it down
+        // Firebase has more — pull it all down and reload
         DB.drawings=fbData.drawings||DB.drawings;
         DB.inspector=fbData.inspector||DB.inspector;
         DB.dailyPreds=fbData.dailyPreds||DB.dailyPreds;
         DB.results=fbData.results||DB.results;
         DB.notes=fbData.notes||DB.notes;
         MY_PLAYS=fbData.myPlays||MY_PLAYS;
-        console.log("LottoIQ: synced newer data from Firebase");
+        // Also save to localStorage so it's available offline
+        try{localStorage.setItem(SK,JSON.stringify({
+          drawings:DB.drawings,inspector:DB.inspector,
+          dailyPreds:DB.dailyPreds,results:DB.results,
+          notes:DB.notes,myPlays:MY_PLAYS
+        }));}catch(e){}
+        console.log("LottoIQ: synced "+fbGames+" games from Firebase");
         render();
       } else if(localGames>0){
         // Push local data up to Firebase
@@ -3969,7 +3975,11 @@ window.onerror = function(msg, src, line, col, err) {
 try {
   console.log("LottoIQ: starting load...");
   fbInit();
-  loadDB(); // Load localStorage first so app is usable immediately
+  loadDB(); // Load localStorage first
+  // If localStorage is empty (new device), show loading state while Firebase loads
+  if(Object.keys(DB.drawings).length===0){
+    document.getElementById('app').innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px"><div style="font-size:32px;font-weight:900;color:#ff4e00;letter-spacing:2px">LottoIQ</div><div style="display:flex;align-items:center;gap:10px;color:#64748b"><div class="spin"></div><span>Loading your data...</span></div></div>';
+  }
   // One-time migration: reset ALL scored predictions to PENDING
   // Previous scoring was broken (false MISSes from undated draws)
   // v8 key signals fresh scoring needed
